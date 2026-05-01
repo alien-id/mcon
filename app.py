@@ -392,21 +392,8 @@ def _is_complete(p: dict) -> bool:
     return bool(steps) and all(s["done"] for s in steps)
 
 
-_ICON_SPEECH = (
-    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" '
-    'stroke="currentColor" stroke-width="2.4" stroke-linecap="round" '
-    'stroke-linejoin="round" aria-hidden="true">'
-    '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'
-    "</svg>"
-)
-_ICON_CLOCK = (
-    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" '
-    'stroke="currentColor" stroke-width="2.4" stroke-linecap="round" '
-    'stroke-linejoin="round" aria-hidden="true">'
-    '<circle cx="12" cy="12" r="10"/>'
-    '<polyline points="12 6 12 12 15.5 13.5"/>'
-    "</svg>"
-)
+_ICON_SPEECH = '<i class="material-icons" aria-hidden="true">chat_bubble_outline</i>'
+_ICON_CLOCK = '<i class="material-icons" aria-hidden="true">schedule</i>'
 
 
 # ----------------------------- CSS -----------------------------
@@ -422,8 +409,6 @@ CSS = """
   --accent: #0f766e;
   --done: #a8acb3;
   --border: #e7e3d8;
-  --warn: #b45309;
-  --info: #1e40af;
 }
 html, body { background: var(--bg) !important; }
 body {
@@ -632,8 +617,10 @@ body {
   word-break: break-word;
 }
 .step-row.todo .text { color: var(--ink); }
-.step-row.todo .icon-human { color: var(--warn); }
-.step-row.todo .icon-external { color: var(--info); }
+.step-row .icon i.material-icons {
+  font-size: 15px;
+  line-height: 1;
+}
 .step-row[title] { cursor: help; }
 
 .step-row.done .ts {
@@ -825,6 +812,8 @@ def index() -> None:
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         '<link href="https://fonts.googleapis.com/css2?'
         'family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
+        '<link href="https://fonts.googleapis.com/icon?family=Material+Icons"'
+        ' rel="stylesheet">'
         f"<style>{CSS}</style>"
     )
 

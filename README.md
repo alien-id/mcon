@@ -57,9 +57,9 @@ State persists to `dashboard.json` next to `app.py`. Hot reload watches `*.py` o
 
 | `type` value | UI icon | Meaning |
 | --- | --- | --- |
-| `null` (default) | `○` open circle | Agent can proceed on its own. |
-| `"awaiting_human"` | speech bubble (amber) | Agent is blocked on input from the principal — answer a question, make a decision, provide a credential. |
-| `"awaiting_external"` | clock (blue) | Agent is blocked on something outside both itself and the principal — an email reply, a scheduled event, a third party. |
+| `null` (default) | open circle | Agent can proceed on its own. |
+| `"awaiting_human"` | speech bubble | Agent is blocked on input from the principal — answer a question, make a decision, provide a credential. |
+| `"awaiting_external"` | clock | Agent is blocked on something outside both itself and the principal — an email reply, a scheduled event, a third party. |
 
 `details` is for context the agent wants to keep with the step — *what* it needs from the human, *who* it's waiting on, links, deadlines. The dashboard only surfaces it as a native browser tooltip on hover; rows with details get a `cursor: help` cue. Once the step is done, type becomes irrelevant in display but `details` remains accessible by hovering.
 
@@ -204,9 +204,9 @@ curl -s http://localhost:8765/api/projects | jq '.[] | {id, title, scope, open: 
 
 **Track a long-running task** — create the project once, then PATCH steps as work progresses. The dashboard reorders done items to the bottom and timestamps them.
 
-**Block on user input** — when the agent can't proceed without a decision or fact from the human, mark the relevant step `type: "awaiting_human"` and write the question into `details`. The user sees the amber speech-bubble icon at a glance and can hover to read the question. Clear `type` (set to `null`) once they answer.
+**Block on user input** — when the agent can't proceed without a decision or fact from the human, mark the relevant step `type: "awaiting_human"` and write the question into `details`. A speech-bubble icon replaces the bullet; hover the row to see the question. Clear `type` (set to `null`) once they answer.
 
-**Block on external dependency** — for waiting on email replies, calendar events, third-party SLAs, etc., use `type: "awaiting_external"` with `details` describing who/what and any deadline. Surfaces as a blue clock icon. Useful for the agent's own bookkeeping too — checking `GET /api/projects` filtered by step type tells it what's still in flight.
+**Block on external dependency** — for waiting on email replies, calendar events, third-party SLAs, etc., use `type: "awaiting_external"` with `details` describing who/what and any deadline. A clock icon replaces the bullet. Useful for the agent's own bookkeeping too — `GET /api/projects` filtered by step type tells it what's still in flight.
 
 **Reconstruct history** — `created_at` on the project and `completed_at` on each done step are honoured verbatim. An agent ingesting logs can backfill an accurate timeline.
 
