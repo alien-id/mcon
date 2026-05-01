@@ -4,7 +4,7 @@ import html as _html
 import json
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +37,7 @@ class _Store:
         self.version = 0
 
     def bump(self) -> None:
+        self.data["last_updated"] = _now_iso()
         _save(self.data)
         self.version += 1
 
@@ -359,7 +360,12 @@ def _fmt_ts(iso: Optional[str]) -> str:
         return ""
 
 
-def _humanize(iso: Optional[str], now: Optional[datetime] = None) -> str:
+def _relative(
+    iso: Optional[str],
+    suffix: str,
+    zero: str,
+    now: Optional[datetime] = None,
+) -> str:
     if not iso:
         return ""
     try:
@@ -369,10 +375,10 @@ def _humanize(iso: Optional[str], now: Optional[datetime] = None) -> str:
     now = now or datetime.now()
     secs = max(0, (now - start).total_seconds())
     if secs < 60:
-        return "just started"
+        return zero
 
     def plural(n: int, unit: str) -> str:
-        return f"{n} {unit}{'s' if n != 1 else ''} elapsed"
+        return f"{n} {unit}{'s' if n != 1 else ''} {suffix}"
 
     if secs < 3600:
         return plural(int(secs // 60), "minute")
@@ -387,13 +393,59 @@ def _humanize(iso: Optional[str], now: Optional[datetime] = None) -> str:
     return plural(int(secs // (365 * 86400)), "year")
 
 
+def _humanize(iso: Optional[str], now: Optional[datetime] = None) -> str:
+    return _relative(iso, "elapsed", "just started", now)
+
+
+def _ago(iso: Optional[str], now: Optional[datetime] = None) -> str:
+    return _relative(iso, "ago", "just now", now)
+
+
+def _last_activity_iso() -> Optional[str]:
+    last = S.data.get("last_updated")
+    if last:
+        return last
+    candidates: list[str] = []
+    for p in S.data["projects"]:
+        if p.get("created_at"):
+            candidates.append(p["created_at"])
+        for s in p.get("steps", []):
+            if s.get("completed_at"):
+                candidates.append(s["completed_at"])
+    return max(candidates) if candidates else None
+
+
+def _step_stats(now: Optional[datetime] = None) -> tuple[int, int]:
+    now = now or datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=today_start.weekday())
+    today_n = 0
+    week_n = 0
+    for p in S.data["projects"]:
+        for s in p.get("steps", []):
+            if not s.get("done"):
+                continue
+            iso = s.get("completed_at")
+            if not iso:
+                continue
+            try:
+                ts = datetime.fromisoformat(iso)
+            except ValueError:
+                continue
+            if ts >= week_start:
+                week_n += 1
+                if ts >= today_start:
+                    today_n += 1
+    return today_n, week_n
+
+
 def _is_complete(p: dict) -> bool:
     steps = p.get("steps", [])
     return bool(steps) and all(s["done"] for s in steps)
 
 
-_ICON_SPEECH = '<i class="material-icons" aria-hidden="true">chat_bubble_outline</i>'
-_ICON_CLOCK = '<i class="material-icons" aria-hidden="true">schedule</i>'
+_ICON_SPEECH = '<i class="material-icons-outlined" aria-hidden="true">sms</i>'
+_ICON_CLOCK = '<i class="material-icons-outlined" aria-hidden="true">schedule</i>'
 
 
 # ----------------------------- CSS -----------------------------
@@ -453,6 +505,11 @@ body {
   font-size: 0.98rem;
   font-variant-numeric: tabular-nums;
 }
+.header-left .updated::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--border);
+}
 @keyframes blink-colon { 50% { opacity: 0.18; } }
 .clock-colon {
   animation: blink-colon 1s infinite;
@@ -510,7 +567,7 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
-  padding: 8px 32px 60px 32px;
+  padding: 8px 32px 24px 32px;
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
@@ -602,8 +659,12 @@ body {
   gap: 8px;
   font-size: 0.9rem;
   line-height: 1.55;
-  padding: 2px 0;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: 5px;
+  transition: background 0.12s ease;
 }
+.step-row:hover { background: rgba(0, 0, 0, 0.035); }
 .step-row .icon {
   font-size: 0.85rem;
   color: var(--muted);
@@ -617,12 +678,12 @@ body {
   word-break: break-word;
 }
 .step-row.todo .text { color: var(--ink); }
-.step-row .icon i.material-icons {
-  font-size: 15px;
+.step-row .icon i.material-icons,
+.step-row .icon i.material-icons-outlined {
+  font-size: 13px;
   line-height: 1;
 }
-.step-row .icon-human i.material-icons { transform: scaleX(-1); }
-.step-row[title] { cursor: help; }
+.step-row .icon-human i.material-icons-outlined { transform: scaleX(-1); }
 
 .step-row.done .ts {
   font-variant-numeric: tabular-nums;
@@ -654,6 +715,19 @@ body {
   padding-top: 8px;
   border-top: 1px dashed var(--border);
   font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 32px 28px 32px;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
   letter-spacing: 0.01em;
 }
 
@@ -815,6 +889,8 @@ def index() -> None:
         'family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">'
         '<link href="https://fonts.googleapis.com/icon?family=Material+Icons"'
         ' rel="stylesheet">'
+        '<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"'
+        ' rel="stylesheet">'
         f"<style>{CSS}</style>"
     )
 
@@ -826,8 +902,10 @@ def index() -> None:
     cache = {
         "date": "",
         "clock": "",
+        "updated": "",
         "info": "",
         "grid": "",
+        "footer": "",
         "tabs_sig": None,
     }
 
@@ -836,6 +914,7 @@ def index() -> None:
             ui.html("<h1>mCon</h1>")
             date_html = ui.html("").classes("date")
             clock_html = ui.html("").classes("clock")
+            updated_html = ui.html("").classes("updated")
         with ui.element("div").classes("header-meta"):
             info_html = ui.html("")
 
@@ -862,6 +941,7 @@ def index() -> None:
 
     tabs_row = ui.element("div").classes("tabs-row")
     grid_html = ui.html("").classes("w-full")
+    footer_html = ui.html("").classes("footer")
 
     def render_header() -> None:
         now = datetime.now()
@@ -884,12 +964,17 @@ def index() -> None:
             + "".join(f"<span>{b}</span>" for b in bits if b)
             + "</div>"
         )
+        last_iso = _last_activity_iso()
+        updated = f"updated {_ago(last_iso)}" if last_iso else ""
         if date != cache["date"]:
             cache["date"] = date
             date_html.set_content(date)
         if clock != cache["clock"]:
             cache["clock"] = clock
             clock_html.set_content(clock)
+        if updated != cache["updated"]:
+            cache["updated"] = updated
+            updated_html.set_content(updated)
         if info != cache["info"]:
             cache["info"] = info
             info_html.set_content(info)
@@ -944,15 +1029,24 @@ def index() -> None:
             for s in scopes:
                 add_tab(s, s)
 
+    def render_footer() -> None:
+        today_n, week_n = _step_stats()
+        text = f"{today_n} done today · {week_n} this week"
+        if text != cache["footer"]:
+            cache["footer"] = text
+            footer_html.set_content(text)
+
     render_header()
     render_tabs()
     render_grid()
+    render_footer()
     ui.timer(1.0, render_header)
 
     # Picks up server-side mutations and refreshes "X elapsed" labels.
     def refresh_state() -> None:
         render_tabs()
         render_grid()
+        render_footer()
 
     ui.timer(2.0, refresh_state)
 
