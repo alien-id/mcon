@@ -47,11 +47,14 @@ State persists to `dashboard.json` next to `app.py`. Hot reload watches `*.py` o
   "id": "string",                      // 8-hex, server-generated, immutable
   "text": "string",                    // required
   "done": false,
+  "created_at": "2026-04-20T09:15:00", // ISO; auto-stamped if omitted
   "completed_at": "string | null",     // ISO; null while not done
   "type": "string | null",             // null | "awaiting_human" | "awaiting_external"
   "details": "string | null"           // free-form context, shown only as hover tooltip
 }
 ```
+
+`created_at` is tracked but not displayed in the UI — useful for ordering, age decay, log reconstruction. Both `created_at` and `completed_at` accept ISO 8601 input on create and PATCH; provide them explicitly to backfill history, omit them to let the server stamp now.
 
 #### Step types
 

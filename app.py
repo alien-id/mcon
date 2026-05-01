@@ -89,6 +89,7 @@ def _make_step(
     completed_at: Optional[str],
     step_type: Optional[str] = None,
     details: Optional[str] = None,
+    created_at: Optional[str] = None,
 ) -> dict:
     if done:
         ts = completed_at or _now_iso()
@@ -101,6 +102,7 @@ def _make_step(
         "completed_at": ts,
         "type": step_type or None,
         "details": _norm_details(details),
+        "created_at": created_at or _now_iso(),
     }
 
 
@@ -111,10 +113,11 @@ class StepIn(BaseModel):
     text: str
     done: bool = False
     completed_at: Optional[str] = None
+    created_at: Optional[str] = None
     type: Optional[str] = None
     details: Optional[str] = None
 
-    @field_validator("completed_at")
+    @field_validator("completed_at", "created_at")
     @classmethod
     def _v(cls, v):
         return _validate_iso(v)
@@ -135,10 +138,11 @@ class StepUpdate(BaseModel):
     text: Optional[str] = None
     done: Optional[bool] = None
     completed_at: Optional[str] = None
+    created_at: Optional[str] = None
     type: Optional[str] = None
     details: Optional[str] = None
 
-    @field_validator("completed_at")
+    @field_validator("completed_at", "created_at")
     @classmethod
     def _v(cls, v):
         return _validate_iso(v)
@@ -210,7 +214,12 @@ def create_project(payload: ProjectIn):
             "scope": _norm_scope(payload.scope),
             "steps": [
                 _make_step(
-                    s.text, s.done, s.completed_at, s.type, s.details
+                    s.text,
+                    s.done,
+                    s.completed_at,
+                    s.type,
+                    s.details,
+                    s.created_at,
                 )
                 for s in (payload.steps or [])
             ],
@@ -292,6 +301,7 @@ def add_step(pid: str, payload: StepIn):
             payload.completed_at,
             payload.type,
             payload.details,
+            payload.created_at,
         )
         proj["steps"].append(step)
         S.bump()
@@ -318,6 +328,8 @@ def update_step(pid: str, sid: str, payload: StepUpdate):
                 s["type"] = fields["type"] or None
             if "details" in fields:
                 s["details"] = _norm_details(fields["details"])
+            if "created_at" in fields:
+                s["created_at"] = fields["created_at"] or _now_iso()
             # If done was just flipped and the caller didn't set the timestamp
             # explicitly, manage it for them.
             if "done" in fields and "completed_at" not in fields:
