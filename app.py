@@ -392,6 +392,23 @@ def _is_complete(p: dict) -> bool:
     return bool(steps) and all(s["done"] for s in steps)
 
 
+_ICON_SPEECH = (
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" '
+    'stroke="currentColor" stroke-width="2.4" stroke-linecap="round" '
+    'stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'
+    "</svg>"
+)
+_ICON_CLOCK = (
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" '
+    'stroke="currentColor" stroke-width="2.4" stroke-linecap="round" '
+    'stroke-linejoin="round" aria-hidden="true">'
+    '<circle cx="12" cy="12" r="10"/>'
+    '<polyline points="12 6 12 12 15.5 13.5"/>'
+    "</svg>"
+)
+
+
 # ----------------------------- CSS -----------------------------
 
 
@@ -596,7 +613,7 @@ body {
 .dash-card:has(.done-collapsed) .steps { margin-bottom: 12px; }
 .step-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   font-size: 0.9rem;
   line-height: 1.55;
@@ -606,22 +623,17 @@ body {
   font-size: 0.85rem;
   color: var(--muted);
   flex: 0 0 14px;
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .step-row .text {
   flex: 1 1 auto;
   word-break: break-word;
 }
 .step-row.todo .text { color: var(--ink); }
-.step-row.todo .icon-human {
-  color: var(--warn);
-  font-weight: 700;
-}
-.step-row.todo .icon-external {
-  color: var(--info);
-  font-weight: 700;
-  letter-spacing: -1px;
-}
+.step-row.todo .icon-human { color: var(--warn); }
+.step-row.todo .icon-external { color: var(--info); }
 .step-row[title] { cursor: help; }
 
 .step-row.done .ts {
@@ -715,9 +727,17 @@ def _card_html(p: dict, expand_done: bool) -> str:
         )
         t = s.get("type")
         if t == "awaiting_human":
-            icon = '<span class="icon icon-human" aria-label="awaiting human input">?</span>'
+            icon = (
+                '<span class="icon icon-human" '
+                'aria-label="awaiting human input">'
+                f"{_ICON_SPEECH}</span>"
+            )
         elif t == "awaiting_external":
-            icon = '<span class="icon icon-external" aria-label="awaiting external input">…</span>'
+            icon = (
+                '<span class="icon icon-external" '
+                'aria-label="awaiting external input">'
+                f"{_ICON_CLOCK}</span>"
+            )
         else:
             icon = '<span class="icon">○</span>'
         rows.append(
