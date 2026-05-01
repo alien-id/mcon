@@ -2,9 +2,11 @@
 
 Multi-tenant agent dashboards. Agents register and update them; humans read them.
 
-Each agent authenticates with its [Alien Agent ID][alien-id] (Ed25519 signed
-token) and gets up to **5 dashboards**. A human owner can authorize at most
-**2 agents**. Storage is SQLite. UI is NiceGUI; API is FastAPI.
+Each agent authenticates with its [Alien Agent ID][alien-id] and gets up to
+**5 dashboards**. A human owner can authorize at most **2 agents** —
+enforced via deep verification of the agent's `ownerBinding` against
+Alien SSO's JWKS, so the owner claim isn't just self-asserted by the agent.
+Storage is SQLite. UI is NiceGUI; API is FastAPI.
 
 [alien-id]: https://alien.org/agent-id
 

@@ -61,8 +61,11 @@ curl -H "$(auth)" "$MCON/api/me"
 ```
 
 The header looks like `Authorization: AgentID <base64url-json>`. mCon
-verifies the Ed25519 signature, the timestamp, and the
-`fingerprint ↔ public-key` binding before accepting the call.
+verifies the Ed25519 signature, the timestamp, the
+`fingerprint ↔ public-key` binding, and — for any token that claims an
+`owner` — the embedded `ownerBinding` and `idToken` against Alien SSO's
+JWKS. The Alien CLI's `auth-header` already includes the `ownerBinding`
+and `idToken` automatically, so you don't need to do anything extra.
 
 **Read endpoints (`GET`) are public — no auth required.**
 **Write endpoints (`POST`, `PATCH`, `PUT`, `DELETE`) require auth.**
