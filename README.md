@@ -47,9 +47,21 @@ State persists to `dashboard.json` next to `app.py`. Hot reload watches `*.py` o
   "id": "string",                      // 8-hex, server-generated, immutable
   "text": "string",                    // required
   "done": false,
-  "completed_at": "string | null"      // ISO; null while not done
+  "completed_at": "string | null",     // ISO; null while not done
+  "type": "string | null",             // null | "awaiting_human" | "awaiting_external"
+  "details": "string | null"           // free-form context, shown only as hover tooltip
 }
 ```
+
+#### Step types
+
+| `type` value | UI icon | Meaning |
+| --- | --- | --- |
+| `null` (default) | `○` | Agent can proceed on its own. |
+| `"awaiting_human"` | `?` (amber) | Agent is blocked on input from the principal — answer a question, make a decision, provide a credential. |
+| `"awaiting_external"` | `…` (blue) | Agent is blocked on something outside both itself and the principal — an email reply, a scheduled event, a third party. |
+
+`details` is for context the agent wants to keep with the step — *what* it needs from the human, *who* it's waiting on, links, deadlines. The dashboard only surfaces it as a native browser tooltip on hover; rows with details get a `cursor: help` cue. Once the step is done, type becomes irrelevant in display but `details` remains accessible by hovering.
 
 ## Endpoints
 
@@ -113,6 +125,24 @@ Append. If `done: true` and `completed_at` is omitted, the server stamps now.
 curl -X POST http://localhost:8765/api/projects/site-rebuild/steps \
   -H 'Content-Type: application/json' \
   -d '{"text": "Set up build pipeline"}'
+
+# Blocked on a decision from the user
+curl -X POST http://localhost:8765/api/projects/site-rebuild/steps \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "text": "Pick CMS",
+    "type": "awaiting_human",
+    "details": "Astro vs. Eleventy — Astro has better DX, Eleventy has zero JS by default."
+  }'
+
+# Blocked on an outside party
+curl -X POST http://localhost:8765/api/projects/site-rebuild/steps \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "text": "Hosting quote from Vercel",
+    "type": "awaiting_external",
+    "details": "Sales replied 2026-04-28 promising numbers by Friday."
+  }'
 ```
 
 ### `PATCH /api/projects/{pid}/steps/{sid}`
@@ -136,6 +166,16 @@ curl -X PATCH http://localhost:8765/api/projects/site-rebuild/steps/abc12345 \
 curl -X PATCH http://localhost:8765/api/projects/site-rebuild/steps/abc12345 \
   -H 'Content-Type: application/json' \
   -d '{"text": "Set up Cloudflare Pages build"}'
+
+# Block on the user (sets the type and the tooltip context)
+curl -X PATCH http://localhost:8765/api/projects/site-rebuild/steps/abc12345 \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "awaiting_human", "details": "Confirm budget cap before purchase."}'
+
+# Unblock and clear context (null clears each field)
+curl -X PATCH http://localhost:8765/api/projects/site-rebuild/steps/abc12345 \
+  -H 'Content-Type: application/json' \
+  -d '{"type": null, "details": null}'
 ```
 
 Auto-stamping rules when `completed_at` is not provided in the payload:
@@ -163,6 +203,10 @@ curl -s http://localhost:8765/api/projects | jq '.[] | {id, title, scope, open: 
 ```
 
 **Track a long-running task** — create the project once, then PATCH steps as work progresses. The dashboard reorders done items to the bottom and timestamps them.
+
+**Block on user input** — when the agent can't proceed without a decision or fact from the human, mark the relevant step `type: "awaiting_human"` and write the question into `details`. The user sees the amber `?` icon at a glance and can hover to read the question. Clear `type` (set to `null`) once they answer.
+
+**Block on external dependency** — for waiting on email replies, calendar events, third-party SLAs, etc., use `type: "awaiting_external"` with `details` describing who/what and any deadline. Surfaces as a blue `…` icon. Useful for the agent's own bookkeeping too — checking `GET /api/projects` filtered by step type tells it what's still in flight.
 
 **Reconstruct history** — `created_at` on the project and `completed_at` on each done step are honoured verbatim. An agent ingesting logs can backfill an accurate timeline.
 

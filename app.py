@@ -72,12 +72,35 @@ def _norm_scope(s: Optional[str]) -> Optional[str]:
     return s or None
 
 
-def _make_step(text: str, done: bool, completed_at: Optional[str]) -> dict:
+_STEP_TYPES = ("awaiting_human", "awaiting_external")
+
+
+def _norm_details(d: Optional[str]) -> Optional[str]:
+    if d is None:
+        return None
+    d = d.strip()
+    return d or None
+
+
+def _make_step(
+    text: str,
+    done: bool,
+    completed_at: Optional[str],
+    step_type: Optional[str] = None,
+    details: Optional[str] = None,
+) -> dict:
     if done:
         ts = completed_at or _now_iso()
     else:
         ts = None
-    return {"id": _new_id(), "text": text, "done": done, "completed_at": ts}
+    return {
+        "id": _new_id(),
+        "text": text,
+        "done": done,
+        "completed_at": ts,
+        "type": step_type or None,
+        "details": _norm_details(details),
+    }
 
 
 # ----------------------------- API models -----------------------------
@@ -87,22 +110,48 @@ class StepIn(BaseModel):
     text: str
     done: bool = False
     completed_at: Optional[str] = None
+    type: Optional[str] = None
+    details: Optional[str] = None
 
     @field_validator("completed_at")
     @classmethod
     def _v(cls, v):
         return _validate_iso(v)
+
+    @field_validator("type")
+    @classmethod
+    def _t(cls, v):
+        if v is None or v == "":
+            return None
+        if v not in _STEP_TYPES:
+            raise ValueError(
+                f"must be one of: {', '.join(_STEP_TYPES)}, or null"
+            )
+        return v
 
 
 class StepUpdate(BaseModel):
     text: Optional[str] = None
     done: Optional[bool] = None
     completed_at: Optional[str] = None
+    type: Optional[str] = None
+    details: Optional[str] = None
 
     @field_validator("completed_at")
     @classmethod
     def _v(cls, v):
         return _validate_iso(v)
+
+    @field_validator("type")
+    @classmethod
+    def _t(cls, v):
+        if v is None or v == "":
+            return None
+        if v not in _STEP_TYPES:
+            raise ValueError(
+                f"must be one of: {', '.join(_STEP_TYPES)}, or null"
+            )
+        return v
 
 
 class ProjectIn(BaseModel):
@@ -159,7 +208,9 @@ def create_project(payload: ProjectIn):
             "description": payload.description or "",
             "scope": _norm_scope(payload.scope),
             "steps": [
-                _make_step(s.text, s.done, s.completed_at)
+                _make_step(
+                    s.text, s.done, s.completed_at, s.type, s.details
+                )
                 for s in (payload.steps or [])
             ],
             "created_at": payload.created_at or _now_iso(),
@@ -234,7 +285,13 @@ def add_step(pid: str, payload: StepIn):
         proj = S.find(pid)
         if not proj:
             raise HTTPException(404)
-        step = _make_step(payload.text, payload.done, payload.completed_at)
+        step = _make_step(
+            payload.text,
+            payload.done,
+            payload.completed_at,
+            payload.type,
+            payload.details,
+        )
         proj["steps"].append(step)
         S.bump()
         return step
@@ -256,6 +313,10 @@ def update_step(pid: str, sid: str, payload: StepUpdate):
                 s["done"] = bool(fields["done"])
             if "completed_at" in fields:
                 s["completed_at"] = fields["completed_at"]
+            if "type" in fields:
+                s["type"] = fields["type"] or None
+            if "details" in fields:
+                s["details"] = _norm_details(fields["details"])
             # If done was just flipped and the caller didn't set the timestamp
             # explicitly, manage it for them.
             if "done" in fields and "completed_at" not in fields:
@@ -344,6 +405,8 @@ CSS = """
   --accent: #0f766e;
   --done: #a8acb3;
   --border: #e7e3d8;
+  --warn: #b45309;
+  --info: #1e40af;
 }
 html, body { background: var(--bg) !important; }
 body {
@@ -550,6 +613,16 @@ body {
   word-break: break-word;
 }
 .step-row.todo .text { color: var(--ink); }
+.step-row.todo .icon-human {
+  color: var(--warn);
+  font-weight: 700;
+}
+.step-row.todo .icon-external {
+  color: var(--info);
+  font-weight: 700;
+  letter-spacing: -1px;
+}
+.step-row[title] { cursor: help; }
 
 .step-row.done .ts {
   font-variant-numeric: tabular-nums;
@@ -637,9 +710,19 @@ def _card_html(p: dict, expand_done: bool) -> str:
 
     rows: list[str] = []
     for s in todo_steps:
+        title_attr = (
+            f' title="{_esc(s["details"])}"' if s.get("details") else ""
+        )
+        t = s.get("type")
+        if t == "awaiting_human":
+            icon = '<span class="icon icon-human" aria-label="awaiting human input">?</span>'
+        elif t == "awaiting_external":
+            icon = '<span class="icon icon-external" aria-label="awaiting external input">…</span>'
+        else:
+            icon = '<span class="icon">○</span>'
         rows.append(
-            '<div class="step-row todo">'
-            '<span class="icon">○</span>'
+            f'<div class="step-row todo"{title_attr}>'
+            f"{icon}"
             f'<span class="text">{_esc(s["text"])}</span>'
             "</div>"
         )
@@ -650,8 +733,11 @@ def _card_html(p: dict, expand_done: bool) -> str:
             if todo_steps:
                 rows.append('<hr class="section-divider"/>')
             for s in done_steps:
+                title_attr = (
+                    f' title="{_esc(s["details"])}"' if s.get("details") else ""
+                )
                 rows.append(
-                    '<div class="step-row done">'
+                    f'<div class="step-row done"{title_attr}>'
                     f'<span class="ts">{_fmt_ts(s.get("completed_at"))}</span>'
                     '<span class="icon">✓</span>'
                     f'<span class="text">{_esc(s["text"])}</span>'
