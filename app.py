@@ -972,15 +972,13 @@ def index() -> None:
         active = [p for p in projects if not _is_complete(p)]
         completed_n = len(projects) - len(active)
         open_n = sum(1 for p in active for s in p["steps"] if not s["done"])
-        bits = [
-            f"{len(active)} active · {open_n} open",
-            f"{completed_n} done" if completed_n else None,
+        parts = [
+            f"{len(active)} active",
+            f"{open_n} open",
         ]
-        info = (
-            '<div class="info">'
-            + "".join(f"<span>{b}</span>" for b in bits if b)
-            + "</div>"
-        )
+        if completed_n:
+            parts.append(f"{completed_n} done")
+        info = '<div class="info">' + " · ".join(parts) + "</div>"
         last_iso = _last_activity_iso()
         updated = f"updated {_ago(last_iso)}" if last_iso else ""
         if date != cache["date"]:
