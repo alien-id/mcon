@@ -13,9 +13,9 @@ Quotas (enforced here):
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
 import threading
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -47,7 +47,7 @@ def _now_iso() -> str:
 
 
 def _new_id() -> str:
-    return uuid.uuid4().hex[:8]
+    return secrets.token_urlsafe(12)
 
 
 def _validate_iso(v: Optional[str], field: str) -> Optional[str]:
@@ -226,7 +226,6 @@ class Store:
         self,
         agent_fingerprint: str,
         *,
-        did: Optional[str],
         title: str,
         description: Optional[str],
     ) -> dict:
@@ -242,12 +241,7 @@ class Store:
                     f"agent already has {n} dashboards "
                     f"(max {MAX_DASHBOARDS_PER_AGENT})"
                 )
-            did = did or _new_id()
-            existing = self._conn.execute(
-                "SELECT 1 FROM dashboards WHERE id = ?", (did,)
-            ).fetchone()
-            if existing:
-                raise Conflict(f"dashboard id {did!r} already exists")
+            did = _new_id()
             now = _now_iso()
             self._conn.execute(
                 "INSERT INTO dashboards"

@@ -105,36 +105,36 @@ curl -X DELETE -H "$(auth)" "$MCON/api/me"
 ## 5) Dashboards
 
 There is **no public list** of every dashboard — discovery is by URL only.
-Your owner sees only the dashboards you tell them the URL of. List your own
-dashboards via `GET /api/me`.
+Dashboard ids are assigned by the server (≈96 bits of entropy, URL-safe) so
+that the URL itself is the read capability. **You cannot pick the id.**
+List your own dashboards via `GET /api/me`.
 
 ```bash
-# Create — title required, id and description optional
+# Create — title required, description optional. The server returns the id.
 curl -X POST -H "$(auth)" -H "Content-Type: application/json" \
-  "$MCON/api/dashboards" \
-  -d '{"id": "work", "title": "Work", "description": "Day job projects"}'
-# → 409 if id collides, 409 if you already have 5 dashboards
+  "$MCON/api/dashboards" -d '{"title": "Work", "description": "Day job projects"}'
+# → 409 if you already have 5 dashboards
+# → 422 if you try to send `id` (or any unknown field)
 
-# Auto-generated id if you omit it (8-hex random)
-curl -X POST -H "$(auth)" -H "Content-Type: application/json" \
-  "$MCON/api/dashboards" -d '{"title": "Side projects"}'
+# Capture the id from the response
+DID=$(curl -sX POST -H "$(auth)" -H "Content-Type: application/json" \
+  "$MCON/api/dashboards" -d '{"title": "Side projects"}' | jq -r .id)
 
 # Get one (anyone with the id; no auth)
-curl -s "$MCON/api/dashboards/work" | jq
+curl -s "$MCON/api/dashboards/$DID" | jq
 
 # Update title or description
 curl -X PATCH -H "$(auth)" -H "Content-Type: application/json" \
-  "$MCON/api/dashboards/work" -d '{"title": "Work — 2026"}'
+  "$MCON/api/dashboards/$DID" -d '{"title": "Work — 2026"}'
 
 # Delete (cascades to projects + steps)
-curl -X DELETE -H "$(auth)" "$MCON/api/dashboards/work"
+curl -X DELETE -H "$(auth)" "$MCON/api/dashboards/$DID"
 ```
 
 After creating a dashboard, send your human owner the URL
-`<mcon-url>/d/<dashboard-id>` — that is how they read it. Treat the id as a
-capability: anyone with the URL can read the dashboard, so prefer the random
-8-hex id (omit `id` on create) for anything sensitive instead of a guessable
-slug like `work`.
+`<mcon-url>/d/<dashboard-id>` — that is how they read it. Treat the URL as a
+capability: anyone who has it can read the dashboard. Don't paste it into
+shared chats, public issues, or anywhere it might be indexed.
 
 ## 6) Projects
 
@@ -142,7 +142,7 @@ Projects belong to a dashboard. Same shape as before, but now nested:
 `/api/dashboards/{did}/projects/{pid}`.
 
 ```bash
-DID=work
+DID=$YOUR_DASHBOARD_ID  # the id returned by POST /api/dashboards
 
 # List (public)
 curl -s "$MCON/api/dashboards/$DID/projects" | jq
@@ -189,7 +189,7 @@ step that's blocked on the human or an external party — the dashboard
 shows a different bullet icon and surfaces `details` as a hover tooltip.
 
 ```bash
-DID=work; PID=site-rebuild
+DID=$YOUR_DASHBOARD_ID; PID=site-rebuild
 
 # Append a normal todo
 curl -X POST -H "$(auth)" -H "Content-Type: application/json" \
@@ -243,7 +243,7 @@ curl -X DELETE -H "$(auth)" \
 | `401` | Missing or invalid `Authorization: AgentID …` token (likely expired — regenerate). |
 | `403` | Token has no `owner` (your Alien Agent ID isn't bound to a human), or the dashboard belongs to another agent. |
 | `404` | Unknown dashboard, project, or step id. |
-| `409` | id collision on create, or you hit a quota (5 dashboards / 2 agents per owner). |
+| `409` | project id collision on create, or you hit a quota (5 dashboards / 2 agents per owner). |
 | `422` | Validation failure — bad ISO timestamp, empty title, unknown `type`, etc. The body lists the offending field paths. |
 
 ## 9) Recipes
@@ -257,7 +257,7 @@ curl -s -H "$(auth)" "$MCON/api/me" | jq '.dashboards[] | {id, title}'
 **Find every step blocked on the human:**
 
 ```bash
-DID=work
+DID=$YOUR_DASHBOARD_ID  # the id returned by POST /api/dashboards
 curl -s "$MCON/api/dashboards/$DID/projects" \
   | jq '.[] | .steps[] | select(.type == "awaiting_human") | {project: .project_id, text, details}'
 ```

@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from nicegui import app, ui
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from auth import AgentIdentity, require_owned_agent
 from db import (
@@ -116,7 +116,7 @@ class ProjectUpdate(BaseModel):
 
 
 class DashboardIn(BaseModel):
-    id: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
     title: str
     description: Optional[str] = None
 
@@ -198,7 +198,6 @@ def create_dashboard(
     try:
         return S.create_dashboard(
             ident.fingerprint,
-            did=payload.id,
             title=payload.title,
             description=payload.description,
         )

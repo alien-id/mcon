@@ -65,7 +65,7 @@ your own dashboards, use `GET /api/me`.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/dashboards/{did}` | One dashboard (public; needs the id). |
-| `POST` | `/api/dashboards` | Create — `409` if you already have 5 or `id` collides. |
+| `POST` | `/api/dashboards` | Create — server returns an unguessable id. `409` if you already have 5. |
 | `PATCH` | `/api/dashboards/{did}` | Update title/description. |
 | `DELETE` | `/api/dashboards/{did}` | Delete (cascades). |
 
