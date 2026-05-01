@@ -800,14 +800,6 @@ a:hover { text-decoration: underline; }
   box-sizing: border-box;
 }
 .hero { text-align: center; padding: 8px 0 36px 0; }
-.kicker {
-  display: inline-flex; align-items: center; gap: 9px;
-  font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.18em;
-  color: var(--muted); font-weight: 600;
-  padding: 6px 14px; border-radius: 999px;
-  background: var(--card); border: 1px solid var(--border);
-  margin-bottom: 26px;
-}
 .live-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: #10b981; display: inline-block;
@@ -832,6 +824,18 @@ a:hover { text-decoration: underline; }
   max-width: 660px; margin: 0 auto;
   font-size: 1.08rem; line-height: 1.55;
   color: var(--ink); opacity: 0.78;
+}
+.cta {
+  max-width: 660px;
+  margin: 22px auto 0 auto;
+  font-size: 1.28rem;
+  line-height: 1.45;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+}
+.cta strong {
+  color: var(--accent);
+  font-weight: 600;
 }
 .cta-row {
   display: flex; gap: 12px; justify-content: center;
@@ -881,6 +885,14 @@ a:hover { text-decoration: underline; }
   font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.14em;
   color: var(--muted); font-weight: 600;
   margin-top: 5px; display: block;
+}
+.stats-foot {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  margin: -48px 0 56px 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
 }
 @media (max-width: 640px) {
   .stat { padding: 10px 14px; min-width: 64px; }
@@ -1168,36 +1180,36 @@ def _head_html() -> str:
 # ============================== landing page ==============================
 
 
-_SAMPLE_CARD = (
-    '<div class="dash-card">'
-    '<div class="head">'
-    '<h2>Rebuild personal site</h2>'
-    '<span class="progress">2/4'
-    '<span class="bar"><i style="width:50%"></i></span></span>'
-    '</div>'
-    '<p class="started">frontend · 2 days elapsed</p>'
-    '<p class="desc">Move off WordPress. Astro + Cloudflare Pages.</p>'
-    '<div class="steps">'
-    '<div class="step-row done">'
-    '<span class="ts">29.04 14:00</span>'
-    '<span class="icon">✓</span>'
-    '<span class="text">Audit current pages</span></div>'
-    '<div class="step-row done">'
-    '<span class="ts">30.04 09:30</span>'
-    '<span class="icon">✓</span>'
-    '<span class="text">Pick CMS — chose Astro</span></div>'
-    '<hr class="section-divider"/>'
-    '<div class="step-row todo" '
-    'title="Astro vs hosted CMS — should editors use the file system or a UI?">'
-    '<span class="icon icon-human" aria-label="awaiting human input">'
-    f'{_ICON_SPEECH}</span>'
-    '<span class="text">Confirm content workflow</span></div>'
-    '<div class="step-row todo">'
-    '<span class="icon">○</span>'
-    '<span class="text">Migrate first 10 posts</span></div>'
-    '</div>'
-    '</div>'
-)
+def _sample_card_html() -> str:
+    """Render the landing-page preview card via the real renderer so it
+    stays pixel-identical to a live project card."""
+    now = datetime.now()
+    ago_2d = (now - timedelta(days=2)).isoformat(timespec="seconds")
+    ago_1d = (now - timedelta(days=1)).isoformat(timespec="seconds")
+    proj = {
+        "id": "demo",
+        "title": "Rebuild personal site",
+        "description": "Move off WordPress. Astro + Cloudflare Pages.",
+        "scope": "frontend",
+        "created_at": ago_2d,
+        "steps": [
+            {"id": "s1", "text": "Audit current pages",
+             "done": True, "completed_at": ago_2d, "created_at": ago_2d,
+             "type": None, "details": None},
+            {"id": "s2", "text": "Pick CMS — chose Astro",
+             "done": True, "completed_at": ago_1d, "created_at": ago_2d,
+             "type": None, "details": None},
+            {"id": "s3", "text": "Confirm content workflow",
+             "done": False, "completed_at": None, "created_at": ago_1d,
+             "type": "awaiting_human",
+             "details": "Astro vs hosted CMS — should editors use the file "
+                        "system or a UI?"},
+            {"id": "s4", "text": "Migrate first 10 posts",
+             "done": False, "completed_at": None, "created_at": ago_1d,
+             "type": None, "details": None},
+        ],
+    }
+    return _card_html(proj, expand_done=True)
 
 
 def _stats_html(s: dict) -> str:
@@ -1216,9 +1228,10 @@ def _stats_html(s: dict) -> str:
         f'{cell(s["projects"], "projects")}'
         f'{cell(s["steps"], "steps")}'
         '</div></div>'
-        f'<p style="text-align:center;color:var(--muted);font-size:0.78rem;'
-        f'margin:-48px 0 56px 0;letter-spacing:0.04em">'
-        f'last update {_esc(last_label)}</p>'
+        '<p class="stats-foot">'
+        '<span class="live-dot"></span>'
+        f'live · last update {_esc(last_label)}'
+        '</p>'
     )
 
 
@@ -1230,16 +1243,19 @@ def landing() -> None:
     with ui.element("div").classes("lp"):
         ui.html(
             '<section class="hero">'
-            '<div class="kicker"><span class="live-dot"></span>'
-            'mission control · v0.2</div>'
             '<h1>Watch your AI agent <span class="hi">work, live.</span></h1>'
             '<p class="lede">'
-            'mCon is the dashboard your AI agent builds for you. Every project '
-            'it starts, every step it ticks off, every question it needs '
-            'answered — on a card, in real time, on a URL only you have.'
+            'mCon is the live status board your AI agent builds for you. '
+            'Every project, every step, every question it needs answered — '
+            'on cards, in real time.'
+            '</p>'
+            '<p class="cta">'
+            '<strong>Show this site to your AI agent to start.</strong> '
+            'It will create a private dashboard for you and give you back '
+            'the secret URL.'
             '</p>'
             '<div class="cta-row">'
-            '<a class="btn primary" href="/skill">Read the agent skill →</a>'
+            '<a class="btn primary" href="/skill">See what the agent will read →</a>'
             '<a class="btn ghost" href="https://alien.org/agent-id" '
             'target="_blank" rel="noopener">Get an Alien Agent ID ↗</a>'
             '</div>'
@@ -1264,7 +1280,7 @@ def landing() -> None:
             f'<span>{_ICON_CLOCK} awaiting external</span>'
             '</div>'
             '</div>'
-            f'<div class="preview-card-wrap">{_SAMPLE_CARD}</div>'
+            f'<div class="preview-card-wrap">{_sample_card_html()}</div>'
             '</section>'
 
             '<section class="howto">'
@@ -1330,7 +1346,7 @@ def landing() -> None:
             '</section>'
 
             '<div class="foot">'
-            'mCon · v0.2.0'
+            'mCon · v1.0.0'
             ' · <a href="/skill">agent skill</a>'
             ' · <a href="/api/skill">raw skill</a>'
             ' · <a href="https://alien.org/agent-id" target="_blank" '
