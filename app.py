@@ -469,7 +469,12 @@ body {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
 }
-.q-page, .nicegui-content { background: var(--bg) !important; padding: 0 !important; }
+.q-page, .nicegui-content {
+  background: var(--bg) !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+}
+.q-layout, .q-page-container { min-height: 0 !important; }
 
 .header-bar {
   display: flex;
@@ -537,7 +542,7 @@ body {
 .tabs-row {
   display: flex;
   gap: 6px;
-  padding: 4px 32px 8px 32px;
+  padding: 2px 32px 2px 32px;
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
@@ -567,7 +572,7 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 16px;
-  padding: 8px 32px 24px 32px;
+  padding: 8px 32px 12px 32px;
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
@@ -719,11 +724,11 @@ body {
 }
 
 .footer {
-  text-align: center;
+  text-align: left;
   color: var(--muted);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
-  padding: 4px 32px 28px 32px;
+  padding: 0 32px 24px 32px;
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
