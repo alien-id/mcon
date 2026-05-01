@@ -789,9 +789,12 @@ def _card_html(p: dict, expand_done: bool) -> str:
             f'<span class="bar"><i style="width:{pct}%"></i></span></span>'
         )
 
-    started = ""
+    meta = []
+    if p.get("scope"):
+        meta.append(f'<span class="scope-tag">{_esc(p["scope"])}</span>')
     if p.get("created_at"):
-        started = f'<p class="started">{_humanize(p["created_at"])}</p>'
+        meta.append(_humanize(p["created_at"]))
+    started = f'<p class="started">{" · ".join(meta)}</p>' if meta else ""
 
     desc = (
         f'<p class="desc">{_esc(p.get("description"))}</p>'
