@@ -1,59 +1,33 @@
 from __future__ import annotations
 
 import html as _html
-import json
-import threading
-import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from nicegui import app, ui
 from pydantic import BaseModel, field_validator
 
-DATA_FILE = Path(__file__).parent / "dashboard.json"
-_lock = threading.Lock()
+from auth import AgentIdentity, require_owned_agent
+from db import (
+    MAX_AGENTS_PER_OWNER,
+    MAX_DASHBOARDS_PER_AGENT,
+    Conflict,
+    Forbidden,
+    NotFound,
+    QuotaExceeded,
+    Store,
+)
 
+ROOT = Path(__file__).parent
+DB_PATH = ROOT / "mcon.sqlite3"
+SKILL_PATH = ROOT / "skills" / "mcon-agent" / "SKILL.md"
 
-def _load() -> dict:
-    if not DATA_FILE.exists():
-        return {"projects": []}
-    try:
-        return json.loads(DATA_FILE.read_text())
-    except json.JSONDecodeError:
-        return {"projects": []}
+S = Store(DB_PATH)
 
-
-def _save(data: dict) -> None:
-    tmp = DATA_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    tmp.replace(DATA_FILE)
-
-
-class _Store:
-    def __init__(self) -> None:
-        self.data = _load()
-        self.version = 0
-
-    def bump(self) -> None:
-        self.data["last_updated"] = _now_iso()
-        _save(self.data)
-        self.version += 1
-
-    def find(self, pid: str) -> Optional[dict]:
-        return next((p for p in self.data["projects"] if p["id"] == pid), None)
-
-
-S = _Store()
-
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def _new_id() -> str:
-    return uuid.uuid4().hex[:8]
+_STEP_TYPES = ("awaiting_human", "awaiting_external")
 
 
 def _validate_iso(v: Optional[str]) -> Optional[str]:
@@ -64,46 +38,6 @@ def _validate_iso(v: Optional[str]) -> Optional[str]:
         return v
     except ValueError as e:
         raise ValueError(f"must be ISO 8601 (got {v!r})") from e
-
-
-def _norm_scope(s: Optional[str]) -> Optional[str]:
-    if s is None:
-        return None
-    s = s.strip().lower()
-    return s or None
-
-
-_STEP_TYPES = ("awaiting_human", "awaiting_external")
-
-
-def _norm_details(d: Optional[str]) -> Optional[str]:
-    if d is None:
-        return None
-    d = d.strip()
-    return d or None
-
-
-def _make_step(
-    text: str,
-    done: bool,
-    completed_at: Optional[str],
-    step_type: Optional[str] = None,
-    details: Optional[str] = None,
-    created_at: Optional[str] = None,
-) -> dict:
-    if done:
-        ts = completed_at or _now_iso()
-    else:
-        ts = None
-    return {
-        "id": _new_id(),
-        "text": text,
-        "done": done,
-        "completed_at": ts,
-        "type": step_type or None,
-        "details": _norm_details(details),
-        "created_at": created_at or _now_iso(),
-    }
 
 
 # ----------------------------- API models -----------------------------
@@ -128,9 +62,7 @@ class StepIn(BaseModel):
         if v is None or v == "":
             return None
         if v not in _STEP_TYPES:
-            raise ValueError(
-                f"must be one of: {', '.join(_STEP_TYPES)}, or null"
-            )
+            raise ValueError(f"must be one of: {', '.join(_STEP_TYPES)}, or null")
         return v
 
 
@@ -153,9 +85,7 @@ class StepUpdate(BaseModel):
         if v is None or v == "":
             return None
         if v not in _STEP_TYPES:
-            raise ValueError(
-                f"must be one of: {', '.join(_STEP_TYPES)}, or null"
-            )
+            raise ValueError(f"must be one of: {', '.join(_STEP_TYPES)}, or null")
         return v
 
 
@@ -185,178 +115,281 @@ class ProjectUpdate(BaseModel):
         return _validate_iso(v)
 
 
-# ----------------------------- API routes -----------------------------
+class DashboardIn(BaseModel):
+    id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
 
 
-@app.get("/api/projects")
-def list_projects():
-    return S.data["projects"]
+class DashboardUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
 
 
-@app.get("/api/projects/{pid}")
-def get_project(pid: str):
-    p = S.find(pid)
-    if not p:
-        raise HTTPException(404)
-    return p
+# --------------------------- error mapping ---------------------------
 
 
-@app.post("/api/projects")
-def create_project(payload: ProjectIn):
-    with _lock:
-        pid = payload.id or _new_id()
-        if S.find(pid):
-            raise HTTPException(409, "project exists")
-        proj = {
-            "id": pid,
-            "title": payload.title,
-            "description": payload.description or "",
-            "scope": _norm_scope(payload.scope),
-            "steps": [
-                _make_step(
-                    s.text,
-                    s.done,
-                    s.completed_at,
-                    s.type,
-                    s.details,
-                    s.created_at,
-                )
-                for s in (payload.steps or [])
-            ],
-            "created_at": payload.created_at or _now_iso(),
-        }
-        S.data["projects"].append(proj)
-        S.bump()
-        return proj
+def _map(exc: Exception) -> HTTPException:
+    if isinstance(exc, NotFound):
+        return HTTPException(404, str(exc))
+    if isinstance(exc, Conflict):
+        return HTTPException(409, str(exc))
+    if isinstance(exc, QuotaExceeded):
+        return HTTPException(409, str(exc))
+    if isinstance(exc, Forbidden):
+        return HTTPException(403, str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(422, str(exc))
+    raise exc
 
 
-@app.put("/api/projects/{pid}")
-def upsert_project(pid: str, payload: ProjectIn):
-    with _lock:
-        steps = [
-            _make_step(s.text, s.done, s.completed_at)
-            for s in (payload.steps or [])
-        ]
-        proj = S.find(pid)
-        if proj:
-            proj["title"] = payload.title
-            proj["description"] = payload.description or ""
-            proj["scope"] = _norm_scope(payload.scope)
-            proj["steps"] = steps
-            if payload.created_at is not None:
-                proj["created_at"] = payload.created_at
-        else:
-            proj = {
-                "id": pid,
-                "title": payload.title,
-                "description": payload.description or "",
-                "scope": _norm_scope(payload.scope),
-                "steps": steps,
-                "created_at": payload.created_at or _now_iso(),
-            }
-            S.data["projects"].append(proj)
-        S.bump()
-        return proj
+def _ensure_agent(ident: AgentIdentity) -> dict:
+    """Register the agent on first sight; enforce per-owner quota."""
+    try:
+        return S.upsert_agent(ident.fingerprint, ident.owner, ident.public_key_pem)
+    except Exception as e:
+        raise _map(e) from e
 
 
-@app.patch("/api/projects/{pid}")
-def patch_project(pid: str, payload: ProjectUpdate):
-    with _lock:
-        proj = S.find(pid)
-        if not proj:
-            raise HTTPException(404)
-        fields = payload.model_dump(exclude_unset=True)
-        if "title" in fields:
-            proj["title"] = fields["title"]
-        if "description" in fields:
-            proj["description"] = fields["description"] or ""
-        if "scope" in fields:
-            proj["scope"] = _norm_scope(fields["scope"])
-        if "created_at" in fields:
-            proj["created_at"] = fields["created_at"] or _now_iso()
-        S.bump()
-        return proj
+# --------------------------- account routes ---------------------------
 
 
-@app.delete("/api/projects/{pid}")
-def delete_project(pid: str):
-    with _lock:
-        proj = S.find(pid)
-        if not proj:
-            raise HTTPException(404)
-        S.data["projects"].remove(proj)
-        S.bump()
-        return {"ok": True}
+@app.get("/api/me")
+def me(ident: AgentIdentity = Depends(require_owned_agent)):
+    agent = _ensure_agent(ident)
+    return {
+        "fingerprint": agent["fingerprint"],
+        "owner": agent["owner"],
+        "created_at": agent["created_at"],
+        "dashboards": S.list_dashboards(ident.fingerprint),
+        "limits": {
+            "dashboards_per_agent": MAX_DASHBOARDS_PER_AGENT,
+            "agents_per_owner": MAX_AGENTS_PER_OWNER,
+        },
+    }
 
 
-@app.post("/api/projects/{pid}/steps")
-def add_step(pid: str, payload: StepIn):
-    with _lock:
-        proj = S.find(pid)
-        if not proj:
-            raise HTTPException(404)
-        step = _make_step(
-            payload.text,
-            payload.done,
-            payload.completed_at,
-            payload.type,
-            payload.details,
-            payload.created_at,
+@app.delete("/api/me")
+def delete_me(ident: AgentIdentity = Depends(require_owned_agent)):
+    try:
+        S.delete_agent(ident.fingerprint)
+    except Exception as e:
+        raise _map(e) from e
+    return {"ok": True}
+
+
+# --------------------------- dashboard routes ---------------------------
+
+
+@app.get("/api/dashboards/{did}")
+def get_dashboard(did: str):
+    try:
+        return S.get_dashboard(did)
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.post("/api/dashboards")
+def create_dashboard(
+    payload: DashboardIn,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        return S.create_dashboard(
+            ident.fingerprint,
+            did=payload.id,
+            title=payload.title,
+            description=payload.description,
         )
-        proj["steps"].append(step)
-        S.bump()
-        return step
+    except Exception as e:
+        raise _map(e) from e
 
 
-@app.patch("/api/projects/{pid}/steps/{sid}")
-def update_step(pid: str, sid: str, payload: StepUpdate):
-    with _lock:
-        proj = S.find(pid)
-        if not proj:
-            raise HTTPException(404)
-        for s in proj["steps"]:
-            if s["id"] != sid:
-                continue
-            fields = payload.model_dump(exclude_unset=True)
-            if "text" in fields:
-                s["text"] = fields["text"]
-            if "done" in fields:
-                s["done"] = bool(fields["done"])
-            if "completed_at" in fields:
-                s["completed_at"] = fields["completed_at"]
-            if "type" in fields:
-                s["type"] = fields["type"] or None
-            if "details" in fields:
-                s["details"] = _norm_details(fields["details"])
-            if "created_at" in fields:
-                s["created_at"] = fields["created_at"] or _now_iso()
-            # If done was just flipped and the caller didn't set the timestamp
-            # explicitly, manage it for them.
-            if "done" in fields and "completed_at" not in fields:
-                if s["done"] and not s.get("completed_at"):
-                    s["completed_at"] = _now_iso()
-                elif not s["done"]:
-                    s["completed_at"] = None
-            S.bump()
-            return s
-        raise HTTPException(404, "step not found")
+@app.patch("/api/dashboards/{did}")
+def patch_dashboard(
+    did: str,
+    payload: DashboardUpdate,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        return S.patch_dashboard(
+            did, ident.fingerprint, payload.model_dump(exclude_unset=True)
+        )
+    except Exception as e:
+        raise _map(e) from e
 
 
-@app.delete("/api/projects/{pid}/steps/{sid}")
-def delete_step(pid: str, sid: str):
-    with _lock:
-        proj = S.find(pid)
-        if not proj:
-            raise HTTPException(404)
-        before = len(proj["steps"])
-        proj["steps"] = [s for s in proj["steps"] if s["id"] != sid]
-        if len(proj["steps"]) == before:
-            raise HTTPException(404, "step not found")
-        S.bump()
-        return {"ok": True}
+@app.delete("/api/dashboards/{did}")
+def delete_dashboard(
+    did: str,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        S.delete_dashboard(did, ident.fingerprint)
+    except Exception as e:
+        raise _map(e) from e
+    return {"ok": True}
 
 
-# ----------------------------- UI helpers -----------------------------
+# --------------------------- project routes ---------------------------
+
+
+@app.get("/api/dashboards/{did}/projects")
+def list_projects(did: str):
+    try:
+        return S.list_projects(did)
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.get("/api/dashboards/{did}/projects/{pid}")
+def get_project(did: str, pid: str):
+    try:
+        return S.get_project(did, pid)
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.post("/api/dashboards/{did}/projects")
+def create_project(
+    did: str,
+    payload: ProjectIn,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    steps = [s.model_dump() for s in (payload.steps or [])]
+    try:
+        return S.create_project(
+            did,
+            ident.fingerprint,
+            pid=payload.id,
+            title=payload.title,
+            description=payload.description,
+            scope=payload.scope,
+            created_at=payload.created_at,
+            steps=steps,
+        )
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.put("/api/dashboards/{did}/projects/{pid}")
+def upsert_project(
+    did: str,
+    pid: str,
+    payload: ProjectIn,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    steps = [s.model_dump() for s in (payload.steps or [])]
+    try:
+        return S.upsert_project(
+            did,
+            ident.fingerprint,
+            pid,
+            title=payload.title,
+            description=payload.description,
+            scope=payload.scope,
+            created_at=payload.created_at,
+            steps=steps,
+        )
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.patch("/api/dashboards/{did}/projects/{pid}")
+def patch_project(
+    did: str,
+    pid: str,
+    payload: ProjectUpdate,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        return S.patch_project(
+            did, ident.fingerprint, pid, payload.model_dump(exclude_unset=True)
+        )
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.delete("/api/dashboards/{did}/projects/{pid}")
+def delete_project(
+    did: str,
+    pid: str,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        S.delete_project(did, ident.fingerprint, pid)
+    except Exception as e:
+        raise _map(e) from e
+    return {"ok": True}
+
+
+# --------------------------- step routes ---------------------------
+
+
+@app.post("/api/dashboards/{did}/projects/{pid}/steps")
+def add_step(
+    did: str,
+    pid: str,
+    payload: StepIn,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        return S.add_step(did, ident.fingerprint, pid, payload.model_dump())
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.patch("/api/dashboards/{did}/projects/{pid}/steps/{sid}")
+def update_step(
+    did: str,
+    pid: str,
+    sid: str,
+    payload: StepUpdate,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        return S.patch_step(
+            did, ident.fingerprint, pid, sid, payload.model_dump(exclude_unset=True)
+        )
+    except Exception as e:
+        raise _map(e) from e
+
+
+@app.delete("/api/dashboards/{did}/projects/{pid}/steps/{sid}")
+def delete_step(
+    did: str,
+    pid: str,
+    sid: str,
+    ident: AgentIdentity = Depends(require_owned_agent),
+):
+    _ensure_agent(ident)
+    try:
+        S.delete_step(did, ident.fingerprint, pid, sid)
+    except Exception as e:
+        raise _map(e) from e
+    return {"ok": True}
+
+
+# --------------------------- skill route ---------------------------
+
+
+@app.get("/api/skill", response_class=PlainTextResponse)
+def get_skill_md() -> str:
+    if not SKILL_PATH.exists():
+        raise HTTPException(404, "skill file not found")
+    return SKILL_PATH.read_text()
+
+
+# ============================== UI helpers ==============================
 
 
 def _esc(s: Optional[str]) -> str:
@@ -413,44 +446,6 @@ def _ago(iso: Optional[str], now: Optional[datetime] = None) -> str:
     return _relative(iso, "ago", "just now", now)
 
 
-def _last_activity_iso() -> Optional[str]:
-    last = S.data.get("last_updated")
-    if last:
-        return last
-    candidates: list[str] = []
-    for p in S.data["projects"]:
-        if p.get("created_at"):
-            candidates.append(p["created_at"])
-        for s in p.get("steps", []):
-            if s.get("completed_at"):
-                candidates.append(s["completed_at"])
-    return max(candidates) if candidates else None
-
-
-def _step_stats(now: Optional[datetime] = None) -> tuple[int, int]:
-    now = now or datetime.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = today_start - timedelta(days=today_start.weekday())
-    today_n = 0
-    week_n = 0
-    for p in S.data["projects"]:
-        for s in p.get("steps", []):
-            if not s.get("done"):
-                continue
-            iso = s.get("completed_at")
-            if not iso:
-                continue
-            try:
-                ts = datetime.fromisoformat(iso)
-            except ValueError:
-                continue
-            if ts >= week_start:
-                week_n += 1
-                if ts >= today_start:
-                    today_n += 1
-    return today_n, week_n
-
-
 def _is_complete(p: dict) -> bool:
     steps = p.get("steps", [])
     return bool(steps) and all(s["done"] for s in steps)
@@ -460,7 +455,7 @@ _ICON_SPEECH = '<i class="material-icons-outlined" aria-hidden="true">sms</i>'
 _ICON_CLOCK = '<i class="material-icons-outlined" aria-hidden="true">schedule</i>'
 
 
-# ----------------------------- CSS -----------------------------
+# ============================== CSS ==============================
 
 
 CSS = """
@@ -488,6 +483,9 @@ body {
 }
 .q-layout, .q-page-container { min-height: 0 !important; }
 
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
 .header-bar {
   display: flex;
   align-items: baseline;
@@ -507,6 +505,14 @@ body {
   letter-spacing: -0.02em;
   margin: 0;
 }
+.header-bar h1 a { color: inherit; }
+.header-bar h1 a:hover { text-decoration: none; opacity: 0.8; }
+.header-bar h1 .sep {
+  color: var(--border);
+  margin: 0 6px;
+  font-weight: 400;
+}
+.header-bar h1 .dash-name { font-weight: 600; }
 .header-left {
   display: flex;
   align-items: baseline;
@@ -542,8 +548,6 @@ body {
   flex-wrap: wrap;
 }
 .header-meta .info { display: flex; gap: 14px; align-items: baseline; }
-
-/* Toggles (Quasar q-toggle) */
 .header-meta .q-toggle__label {
   font-size: 0.82rem !important;
   color: var(--muted);
@@ -605,10 +609,7 @@ body {
   box-shadow: 0 1px 3px rgba(20, 20, 30, 0.05),
               0 18px 38px -18px rgba(20, 20, 30, 0.14);
 }
-.dash-card.complete {
-  opacity: 0.55;
-  filter: saturate(0.4);
-}
+.dash-card.complete { opacity: 0.55; filter: saturate(0.4); }
 .dash-card.complete:hover { opacity: 0.9; }
 
 .dash-card .head {
@@ -690,10 +691,7 @@ body {
   align-items: center;
   justify-content: center;
 }
-.step-row .text {
-  flex: 1 1 auto;
-  word-break: break-word;
-}
+.step-row .text { flex: 1 1 auto; word-break: break-word; }
 .step-row.todo .text { color: var(--ink); }
 .step-row .icon i.material-icons,
 .step-row .icon i.material-icons-outlined {
@@ -752,7 +750,7 @@ body {
   grid-column: 1 / -1;
   text-align: center;
   color: var(--muted);
-  padding: 100px 20px;
+  padding: 80px 20px;
   font-size: 0.95rem;
   line-height: 1.6;
 }
@@ -763,10 +761,268 @@ body {
   font-size: 0.85rem;
   color: var(--ink);
 }
+
+/* --- landing (legacy, used by /skill) --- */
+.landing {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 32px 32px 64px 32px;
+  box-sizing: border-box;
+}
+.landing h1 {
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin: 0 0 6px 0;
+  line-height: 1.05;
+}
+.landing .tag {
+  color: var(--muted);
+  font-size: 1.05rem;
+  margin: 0 0 28px 0;
+}
+
+/* --- mission control landing --- */
+.bg-grid {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(15,118,110,0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15,118,110,0.05) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: -1px -1px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, rgba(0,0,0,0.55), transparent 70%);
+          mask-image: radial-gradient(ellipse at 50% 0%, rgba(0,0,0,0.55), transparent 70%);
+}
+.lp {
+  position: relative; z-index: 1;
+  max-width: 1000px; margin: 0 auto;
+  padding: 56px 32px 72px 32px;
+  box-sizing: border-box;
+}
+.hero { text-align: center; padding: 8px 0 36px 0; }
+.kicker {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.18em;
+  color: var(--muted); font-weight: 600;
+  padding: 6px 14px; border-radius: 999px;
+  background: var(--card); border: 1px solid var(--border);
+  margin-bottom: 26px;
+}
+.live-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #10b981; display: inline-block;
+  box-shadow: 0 0 0 0 rgba(16,185,129,0.5);
+  animation: live-pulse 2s infinite;
+}
+@keyframes live-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.5); }
+  70%  { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+  100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+}
+.hero h1 {
+  font-size: clamp(2.4rem, 5.2vw, 3.6rem);
+  font-weight: 700; letter-spacing: -0.04em;
+  line-height: 1.02; margin: 0 0 18px 0;
+}
+.hero h1 .hi {
+  background: linear-gradient(180deg, transparent 62%, rgba(15,118,110,0.18) 62%);
+  padding: 0 4px; color: var(--accent);
+}
+.lede {
+  max-width: 660px; margin: 0 auto;
+  font-size: 1.08rem; line-height: 1.55;
+  color: var(--ink); opacity: 0.78;
+}
+.cta-row {
+  display: flex; gap: 12px; justify-content: center;
+  margin-top: 28px; flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 0.92rem; font-weight: 500;
+  padding: 10px 18px; border-radius: 8px;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: transform .15s ease, background .15s ease,
+              color .15s ease, border-color .15s ease;
+}
+.btn:hover { transform: translateY(-1px); text-decoration: none; }
+.btn.primary { background: var(--ink); color: #fff; }
+.btn.primary:hover { background: var(--accent); }
+.btn.ghost {
+  background: transparent; color: var(--ink);
+  border-color: var(--border);
+}
+.btn.ghost:hover { background: var(--card); border-color: var(--ink); }
+
+.stats {
+  display: flex; justify-content: center;
+  margin: 4px auto 64px auto;
+}
+.stats-inner {
+  display: flex;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 4px;
+  box-shadow: 0 1px 2px rgba(20,20,30,.03),
+              0 12px 28px -20px rgba(20,20,30,.10);
+}
+.stat {
+  padding: 12px 22px; text-align: center;
+  border-right: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  min-width: 84px;
+}
+.stat:last-child { border-right: 0; }
+.stat .n {
+  font-size: 1.4rem; font-weight: 700; color: var(--ink);
+  display: block; line-height: 1;
+}
+.stat .l {
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--muted); font-weight: 600;
+  margin-top: 5px; display: block;
+}
+@media (max-width: 640px) {
+  .stat { padding: 10px 14px; min-width: 64px; }
+  .stat .n { font-size: 1.15rem; }
+}
+
+.preview {
+  display: grid; grid-template-columns: 1fr 1.15fr;
+  gap: 40px; align-items: center;
+  margin-bottom: 72px;
+}
+.preview h3 {
+  font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em;
+  margin: 0 0 12px 0; line-height: 1.15;
+}
+.preview p {
+  color: var(--ink); opacity: 0.78;
+  font-size: 0.95rem; line-height: 1.55; margin: 0 0 8px 0;
+}
+.preview .legend { color: var(--muted); font-size: 0.82rem; margin-top: 14px; }
+.preview .legend span { display: inline-block; margin-right: 14px; }
+.preview .legend i.material-icons-outlined {
+  font-size: 12px; vertical-align: -1px; color: var(--muted);
+}
+.preview-card-wrap { transform: rotate(-0.4deg); }
+.preview-card-wrap .dash-card { box-shadow: 0 4px 14px rgba(20,20,30,.06),
+                                            0 28px 60px -28px rgba(20,20,30,.18); }
+@media (max-width: 720px) {
+  .preview { grid-template-columns: 1fr; gap: 24px; }
+  .preview-card-wrap { transform: none; }
+}
+
+.howto {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 16px; margin-bottom: 56px;
+}
+.step-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 22px 22px 20px 22px;
+}
+.step-card .num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--ink); color: #fff;
+  font-size: 0.85rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  margin-bottom: 14px;
+}
+.step-card h4 {
+  font-size: 0.98rem; font-weight: 600;
+  margin: 0 0 6px 0; letter-spacing: -0.01em;
+}
+.step-card p {
+  color: var(--muted); font-size: 0.88rem; line-height: 1.5; margin: 0;
+}
+.step-card code {
+  background: var(--soft); padding: 1px 5px;
+  border-radius: 4px; font-size: 0.82rem; color: var(--ink);
+}
+@media (max-width: 720px) { .howto { grid-template-columns: 1fr; } }
+
+.duo {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 16px; margin-bottom: 48px;
+}
+.panel {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px 22px;
+}
+.panel h4 {
+  margin: 0 0 6px 0; font-size: 0.95rem; font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.panel p {
+  margin: 0 0 6px 0; color: var(--muted);
+  font-size: 0.88rem; line-height: 1.5;
+}
+.panel p:last-child { margin-bottom: 0; }
+.panel code {
+  background: var(--soft); padding: 1px 5px;
+  border-radius: 4px; font-size: 0.82rem; color: var(--ink);
+}
+.panel .instructions {
+  margin: 8px 0 10px 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: human-step;
+}
+.panel .instructions li {
+  position: relative;
+  padding: 0 0 10px 28px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  counter-increment: human-step;
+}
+.panel .instructions li:last-child { padding-bottom: 0; }
+.panel .instructions li::before {
+  content: counter(human-step);
+  position: absolute;
+  left: 0; top: 0;
+  width: 18px; height: 18px;
+  border-radius: 5px;
+  background: var(--soft);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center; justify-content: center;
+  line-height: 1;
+}
+.panel .instructions em {
+  font-style: normal;
+  color: var(--ink);
+  font-weight: 500;
+}
+.panel .fineprint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  margin-top: 10px;
+  line-height: 1.5;
+}
+.panel.muted {
+  opacity: 0.6;
+  transition: opacity .25s ease;
+}
+.panel.muted:hover { opacity: 1; }
+@media (max-width: 640px) { .duo { grid-template-columns: 1fr; } }
+
+.foot {
+  text-align: center; color: var(--muted);
+  font-size: 0.78rem; padding-top: 28px;
+  border-top: 1px solid var(--border);
+}
+.foot a { color: var(--muted); margin: 0 10px; }
+.foot a:hover { color: var(--accent); text-decoration: none; }
 """
 
 
-# ----------------------------- Render -----------------------------
+# ============================== card render ==============================
 
 
 def _card_html(p: dict, expand_done: bool) -> str:
@@ -864,28 +1120,26 @@ def _card_html(p: dict, expand_done: bool) -> str:
 
 
 def _grid_html(
+    projects: list[dict],
     show_completed: bool,
     expand_done: bool,
     scope: Optional[str],
 ) -> str:
-    all_projects = S.data["projects"]
-    if not all_projects:
+    if not projects:
         return (
             '<div class="empty">'
             "No projects yet.<br/>"
-            "Try <code>POST /api/projects</code> with "
+            "Try <code>POST /api/dashboards/&lt;id&gt;/projects</code> with "
             '<code>{"title": "..."}</code>.'
             "</div>"
         )
     if scope:
-        projects = [p for p in all_projects if p.get("scope") == scope]
+        projects = [p for p in projects if p.get("scope") == scope]
         if not projects:
             return (
                 '<div class="empty">No projects in scope '
                 f'&ldquo;{_esc(scope)}&rdquo;.</div>'
             )
-    else:
-        projects = all_projects
     active = [p for p in projects if not _is_complete(p)]
     completed = [p for p in projects if _is_complete(p)]
     ordered = active + (completed if show_completed else [])
@@ -897,12 +1151,8 @@ def _grid_html(
     return "".join(_card_html(p, expand_done) for p in ordered)
 
 
-# ----------------------------- Page -----------------------------
-
-
-@ui.page("/")
-def index() -> None:
-    ui.add_head_html(
+def _head_html() -> str:
+    return (
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         '<link href="https://fonts.googleapis.com/css2?'
@@ -914,11 +1164,231 @@ def index() -> None:
         f"<style>{CSS}</style>"
     )
 
-    ui_state = {
-        "show_completed": False,
-        "expand_done": False,
-        "scope": None,
-    }
+
+# ============================== landing page ==============================
+
+
+_SAMPLE_CARD = (
+    '<div class="dash-card">'
+    '<div class="head">'
+    '<h2>Rebuild personal site</h2>'
+    '<span class="progress">2/4'
+    '<span class="bar"><i style="width:50%"></i></span></span>'
+    '</div>'
+    '<p class="started">frontend · 2 days elapsed</p>'
+    '<p class="desc">Move off WordPress. Astro + Cloudflare Pages.</p>'
+    '<div class="steps">'
+    '<div class="step-row done">'
+    '<span class="ts">29.04 14:00</span>'
+    '<span class="icon">✓</span>'
+    '<span class="text">Audit current pages</span></div>'
+    '<div class="step-row done">'
+    '<span class="ts">30.04 09:30</span>'
+    '<span class="icon">✓</span>'
+    '<span class="text">Pick CMS — chose Astro</span></div>'
+    '<hr class="section-divider"/>'
+    '<div class="step-row todo" '
+    'title="Astro vs hosted CMS — should editors use the file system or a UI?">'
+    '<span class="icon icon-human" aria-label="awaiting human input">'
+    f'{_ICON_SPEECH}</span>'
+    '<span class="text">Confirm content workflow</span></div>'
+    '<div class="step-row todo">'
+    '<span class="icon">○</span>'
+    '<span class="text">Migrate first 10 posts</span></div>'
+    '</div>'
+    '</div>'
+)
+
+
+def _stats_html(s: dict) -> str:
+    last = s.get("last_updated")
+    last_label = _ago(last) if last else "no activity yet"
+
+    def cell(n: int, label: str) -> str:
+        return f'<div class="stat"><span class="n">{n}</span>' \
+               f'<span class="l">{label}</span></div>'
+
+    return (
+        '<div class="stats"><div class="stats-inner">'
+        f'{cell(s["owners"], "humans")}'
+        f'{cell(s["agents"], "agents")}'
+        f'{cell(s["dashboards"], "boards")}'
+        f'{cell(s["projects"], "projects")}'
+        f'{cell(s["steps"], "steps")}'
+        '</div></div>'
+        f'<p style="text-align:center;color:var(--muted);font-size:0.78rem;'
+        f'margin:-48px 0 56px 0;letter-spacing:0.04em">'
+        f'last update {_esc(last_label)}</p>'
+    )
+
+
+@ui.page("/")
+def landing() -> None:
+    ui.add_head_html(_head_html())
+    ui.html('<div class="bg-grid"></div>')
+
+    with ui.element("div").classes("lp"):
+        ui.html(
+            '<section class="hero">'
+            '<div class="kicker"><span class="live-dot"></span>'
+            'mission control · v0.2</div>'
+            '<h1>Watch your AI agent <span class="hi">work, live.</span></h1>'
+            '<p class="lede">'
+            'mCon is the dashboard your AI agent builds for you. Every project '
+            'it starts, every step it ticks off, every question it needs '
+            'answered — on a card, in real time, on a URL only you have.'
+            '</p>'
+            '<div class="cta-row">'
+            '<a class="btn primary" href="/skill">Read the agent skill →</a>'
+            '<a class="btn ghost" href="https://alien.org/agent-id" '
+            'target="_blank" rel="noopener">Get an Alien Agent ID ↗</a>'
+            '</div>'
+            '</section>'
+        )
+
+        stats_el = ui.html("")
+
+        ui.html(
+            '<section class="preview">'
+            '<div>'
+            '<h3>One card per project. One line per step.</h3>'
+            '<p>Your agent writes the cards. You read them. Done items strike '
+            'through and slip to the bottom. Open work stays at the top, '
+            'sorted by what is blocking what.</p>'
+            '<p>When the agent needs a decision from you, the bullet turns '
+            'into a speech bubble — hover to see the question.</p>'
+            '<div class="legend">'
+            '<span><span class="icon">○</span> open</span>'
+            '<span><span class="icon">✓</span> done</span>'
+            f'<span>{_ICON_SPEECH} awaiting you</span>'
+            f'<span>{_ICON_CLOCK} awaiting external</span>'
+            '</div>'
+            '</div>'
+            f'<div class="preview-card-wrap">{_SAMPLE_CARD}</div>'
+            '</section>'
+
+            '<section class="howto">'
+            '<div class="step-card"><div class="num">1</div>'
+            '<h4>Agent gets identity</h4>'
+            '<p>One QR scan in the Alien app binds your AI agent to you. '
+            'Every API call from the agent is Ed25519-signed and traceable.</p>'
+            '</div>'
+            '<div class="step-card"><div class="num">2</div>'
+            '<h4>Agent creates a dashboard</h4>'
+            '<p>The agent calls <code>POST /api/dashboards</code>, then '
+            'populates projects and steps as it works. Up to '
+            f'{MAX_DASHBOARDS_PER_AGENT} dashboards per agent.</p>'
+            '</div>'
+            '<div class="step-card"><div class="num">3</div>'
+            '<h4>You read it via the URL</h4>'
+            '<p>The agent gives you a private URL like '
+            '<code>/d/abc12345</code>. Open it any time — the page refreshes '
+            'as the agent works.</p>'
+            '</div>'
+            '</section>'
+
+            '<section class="duo">'
+            '<div class="panel muted">'
+            '<h4>For AI agents</h4>'
+            '<p>mCon is the live status page you keep for your human owner. '
+            'One dashboard per area of work, one project per task, one step '
+            'per checklist item.</p>'
+            '<p>You drive everything via the REST API; humans only read. '
+            'Mark a step <code>awaiting_human</code> (with the question in '
+            '<code>details</code>) when blocked on the human, or '
+            '<code>awaiting_external</code> when waiting on email or an '
+            'SLA — both render as distinct bullet icons.</p>'
+            '<p>The skill at <a href="/skill">/skill</a> '
+            '(or <code>GET /api/skill</code>) is the canonical reference. '
+            'Read it before your first call.</p>'
+            f'<p class="fineprint">Quotas: {MAX_DASHBOARDS_PER_AGENT} '
+            f'dashboards per agent · {MAX_AGENTS_PER_OWNER} agents per '
+            'human owner. Unbound agents are rejected with '
+            '<code>403</code> — get an Alien Agent ID first.</p>'
+            '</div>'
+            '<div class="panel">'
+            '<h4>For humans</h4>'
+            '<p>You don\'t sign in here. To get a dashboard:</p>'
+            '<ol class="instructions">'
+            '<li>Make sure your AI agent has an '
+            '<a href="https://alien.org/agent-id" target="_blank" '
+            'rel="noopener">Alien Agent ID</a> bound to you. mCon will not '
+            'accept calls from an unbound agent.</li>'
+            '<li>Show your agent the URL of <em>this</em> mCon site and ask '
+            'it to <em>create a dashboard for the tasks you want it to '
+            'manage</em>. It will read <a href="/skill">/skill</a> and call '
+            'the API on its own.</li>'
+            '<li>The agent gives you back a secret URL like '
+            '<code>/d/abc12345</code>. Open it any time to see what your '
+            'agent is doing — the page refreshes as it works.</li>'
+            '</ol>'
+            f'<p class="fineprint">Quotas: {MAX_DASHBOARDS_PER_AGENT} '
+            f'dashboards per agent · {MAX_AGENTS_PER_OWNER} agents per human '
+            'owner. The dashboard URL is the only key — anyone you share it '
+            'with can read the dashboard, so keep it private.</p>'
+            '</div>'
+            '</section>'
+
+            '<div class="foot">'
+            'mCon · v0.2.0'
+            ' · <a href="/skill">agent skill</a>'
+            ' · <a href="/api/skill">raw skill</a>'
+            ' · <a href="https://alien.org/agent-id" target="_blank" '
+            'rel="noopener">Alien Agent ID</a>'
+            '</div>'
+        )
+
+    def render_stats() -> None:
+        stats_el.set_content(_stats_html(S.aggregate_stats()))
+
+    render_stats()
+    ui.timer(5.0, render_stats)
+
+
+# ============================== skill page ==============================
+
+
+@ui.page("/skill")
+def skill_page() -> None:
+    ui.add_head_html(_head_html())
+    if not SKILL_PATH.exists():
+        ui.html(
+            '<div class="landing">'
+            "<h1>Skill not found</h1>"
+            f"<p>Expected at <code>{_esc(str(SKILL_PATH))}</code>.</p>"
+            "</div>"
+        )
+        return
+    text = SKILL_PATH.read_text()
+    with ui.element("div").classes("landing"):
+        ui.html(
+            '<p class="tag" style="margin-bottom:18px">'
+            'Agent skill — also available as raw markdown at '
+            '<a href="/api/skill">/api/skill</a>. '
+            '<a href="/">← back</a></p>'
+        )
+        ui.markdown(text).classes("w-full")
+
+
+# ============================== dashboard page ==============================
+
+
+@ui.page("/d/{did}")
+def dashboard_view(did: str) -> None:
+    ui.add_head_html(_head_html())
+
+    try:
+        dboard = S.get_dashboard(did)
+    except NotFound:
+        ui.html(
+            '<div class="landing">'
+            "<h1>Dashboard not found</h1>"
+            '<p><a href="/">← back to all dashboards</a></p>'
+            "</div>"
+        )
+        return
+
+    ui_state = {"show_completed": False, "expand_done": False, "scope": None}
     cache = {
         "date": "",
         "clock": "",
@@ -927,11 +1397,12 @@ def index() -> None:
         "grid": "",
         "footer": "",
         "tabs_sig": None,
+        "title": "",
     }
 
     with ui.element("div").classes("header-bar"):
         with ui.element("div").classes("header-left"):
-            ui.html("<h1>mCon</h1>")
+            title_html = ui.html("")
             date_html = ui.html("").classes("date")
             clock_html = ui.html("").classes("clock")
             updated_html = ui.html("").classes("updated")
@@ -940,7 +1411,7 @@ def index() -> None:
 
             def on_done_toggle(e):
                 ui_state["expand_done"] = bool(e.value)
-                cache["grid"] = ""  # force re-render
+                cache["grid"] = ""
                 render_grid()
 
             def on_completed_toggle(e):
@@ -948,22 +1419,27 @@ def index() -> None:
                 cache["grid"] = ""
                 render_grid()
 
+            ui.switch("done", value=False, on_change=on_done_toggle).props(
+                "dense color=teal"
+            )
             ui.switch(
-                "done",
-                value=False,
-                on_change=on_done_toggle,
-            ).props("dense color=teal")
-            ui.switch(
-                "completed",
-                value=False,
-                on_change=on_completed_toggle,
+                "completed", value=False, on_change=on_completed_toggle
             ).props("dense color=teal")
 
     tabs_row = ui.element("div").classes("tabs-row")
     grid_html = ui.html("").classes("w-full")
     footer_html = ui.html("").classes("footer")
 
+    def fetch() -> tuple[dict, list[dict]]:
+        try:
+            d = S.get_dashboard(did)
+            ps = S.list_projects(did)
+        except NotFound:
+            return dboard, []
+        return d, ps
+
     def render_header() -> None:
+        d, projects = fetch()
         now = datetime.now()
         clock = (
             now.strftime("%H")
@@ -971,19 +1447,23 @@ def index() -> None:
             + now.strftime("%M")
         )
         date = now.strftime("%a, %d.%m.%Y")
-        projects = S.data["projects"]
+        title = (
+            '<h1><a href="/">mCon</a>'
+            '<span class="sep">/</span>'
+            f'<span class="dash-name">{_esc(d["title"])}</span></h1>'
+        )
         active = [p for p in projects if not _is_complete(p)]
         completed_n = len(projects) - len(active)
         open_n = sum(1 for p in active for s in p["steps"] if not s["done"])
-        parts = [
-            f"{len(active)} active",
-            f"{open_n} open",
-        ]
+        parts = [f"{len(active)} active", f"{open_n} open"]
         if completed_n:
             parts.append(f"{completed_n} done")
         info = '<div class="info">' + " · ".join(parts) + "</div>"
-        last_iso = _last_activity_iso()
+        last_iso = d.get("last_updated") or d.get("created_at")
         updated = f"updated {_ago(last_iso)}" if last_iso else ""
+        if title != cache["title"]:
+            cache["title"] = title
+            title_html.set_content(title)
         if date != cache["date"]:
             cache["date"] = date
             date_html.set_content(date)
@@ -998,9 +1478,10 @@ def index() -> None:
             info_html.set_content(info)
 
     def render_grid() -> None:
+        _, projects = fetch()
         html_str = (
             f'<div class="grid-wrap">'
-            f'{_grid_html(ui_state["show_completed"], ui_state["expand_done"], ui_state["scope"])}'
+            f'{_grid_html(projects, ui_state["show_completed"], ui_state["expand_done"], ui_state["scope"])}'
             "</div>"
         )
         if html_str != cache["grid"]:
@@ -1017,9 +1498,10 @@ def index() -> None:
         render_grid()
 
     def render_tabs() -> None:
+        _, projects = fetch()
         scopes = sorted({
             p.get("scope")
-            for p in S.data["projects"]
+            for p in projects
             if not _is_complete(p) and p.get("scope")
         })
         if ui_state["scope"] is not None and ui_state["scope"] not in scopes:
@@ -1048,7 +1530,14 @@ def index() -> None:
                 add_tab(s, s)
 
     def render_footer() -> None:
-        today_n, week_n = _step_stats()
+        now = datetime.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=today_start.weekday())
+        today_n, week_n = S.step_stats_for_dashboard(
+            did,
+            today_iso=today_start.isoformat(timespec="seconds"),
+            week_iso=week_start.isoformat(timespec="seconds"),
+        )
         text = f"{today_n} done today · {week_n} this week"
         if text != cache["footer"]:
             cache["footer"] = text
@@ -1060,13 +1549,15 @@ def index() -> None:
     render_footer()
     ui.timer(1.0, render_header)
 
-    # Picks up server-side mutations and refreshes "X elapsed" labels.
     def refresh_state() -> None:
         render_tabs()
         render_grid()
         render_footer()
 
     ui.timer(2.0, refresh_state)
+
+
+# ============================== entrypoint ==============================
 
 
 ui.run(
