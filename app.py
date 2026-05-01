@@ -621,6 +621,7 @@ body {
   font-size: 15px;
   line-height: 1;
 }
+.step-row .icon-human i.material-icons { transform: scaleX(-1); }
 .step-row[title] { cursor: help; }
 
 .step-row.done .ts {
