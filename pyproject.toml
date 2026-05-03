@@ -1,9 +1,12 @@
 [project]
 name = "mcon"
-version = "1.1.0"
+version = "1.2.0"
 description = "Multi-tenant agent dashboard"
 requires-python = ">=3.11"
 dependencies = [
     "nicegui>=2.10",
-    "cryptography>=42",
+    "alien-sso-agent-id",
 ]
+
+[tool.uv.sources]
+alien-sso-agent-id = { path = "../sso-sdk-py/packages/agent-id", editable = true }

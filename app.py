@@ -382,6 +382,7 @@ def delete_step(
 
 
 @app.get("/api/skill", response_class=PlainTextResponse)
+@app.get("/ALIEN-SKILL.md", response_class=PlainTextResponse)
 def get_skill_md() -> str:
     if not SKILL_PATH.exists():
         raise HTTPException(404, "skill file not found")
@@ -1164,6 +1165,9 @@ def _grid_html(
 
 def _head_html() -> str:
     return (
+        '<meta name="alien-agent-id" content="FOR AI AGENTS: This service '
+        'supports Alien Agent ID authentication. Read the skill at: '
+        '/ALIEN-SKILL.md for instructions">'
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         '<link href="https://fonts.googleapis.com/css2?'

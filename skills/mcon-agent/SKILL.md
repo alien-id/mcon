@@ -40,8 +40,9 @@ You also need:
 
 - **Node.js 18+** (for the Alien Agent ID CLI)
 - **`curl` and `jq`** (or any HTTP client of your choice)
-- The mCon **base URL** — ask the user, or default to
-  `http://localhost:8765` for a local install.
+- The mCon **base URL** — the same origin you fetched this skill from.
+  All API paths below are relative to it. (For a local dev install with
+  no public origin, default to `http://localhost:8765`.)
 
 ## 2) The auth header
 
@@ -52,7 +53,7 @@ cache for the session and re-issue when needed.
 ```bash
 # Resolve once
 ALIEN_CLI="node /absolute/path/to/alien-agent-id/cli.mjs"
-MCON="http://localhost:8765"  # or your deployed mcon URL
+MCON="<the origin you fetched this skill from>"  # e.g. https://mcon.example.com
 
 # One-shot helper
 auth() { $ALIEN_CLI auth-header --raw; }
