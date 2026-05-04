@@ -386,7 +386,7 @@ def get_service_manifest(request: Request) -> dict:
     return {
         "version": 1,
         "service": {"name": "mcon", "url": origin},
-        "auth": {"header": "Authorization", "scheme": "Bearer"},
+        "auth": {"header": "Authorization", "scheme": "AgentID"},
         "api": {"base": f"{origin}/api"},
     }
 
