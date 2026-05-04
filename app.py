@@ -1614,11 +1614,16 @@ def dashboard_view(did: str) -> None:
 # ============================== entrypoint ==============================
 
 
-ui.run(
-    title="mCon",
-    favicon="📋",
-    dark=False,
-    port=8765,
-    reload=True,
-    show=False,
-)
+if __name__ in {"__main__", "__mp_main__"}:
+    # Top-level guard so the module can be imported without starting the
+    # server (e.g., from pytest). NiceGUI's reload mechanism runs the file
+    # under the `__mp_main__` name in the worker process, so both names
+    # need to be allowed for `uv run python app.py` to keep working.
+    ui.run(
+        title="mCon",
+        favicon="📋",
+        dark=False,
+        port=8765,
+        reload=True,
+        show=False,
+    )
