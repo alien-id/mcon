@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html as _html
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -400,9 +400,17 @@ def _fmt_ts(iso: Optional[str]) -> str:
     if not iso:
         return ""
     try:
-        return datetime.fromisoformat(iso).strftime("%d.%m %H:%M")
+        dt = datetime.fromisoformat(iso)
     except ValueError:
         return ""
+    # Stored timestamps are naive UTC (server clock is UTC). Mark them so
+    # the browser can render in the viewer's local time via _TZ_JS below.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (
+        f'<time datetime="{dt.isoformat()}" data-tz>'
+        f'{dt.strftime("%d.%m %H:%M")}</time>'
+    )
 
 
 def _relative(
@@ -1163,6 +1171,35 @@ def _grid_html(
     return "".join(_card_html(p, expand_done) for p in ordered)
 
 
+_TZ_JS = """
+(function () {
+  const pad = n => String(n).padStart(2, '0');
+  const fmt = d => pad(d.getDate()) + '.' + pad(d.getMonth() + 1)
+                 + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  const apply = root => {
+    const els = (root.querySelectorAll
+                  ? root.querySelectorAll('time[data-tz]:not([data-tz-done])')
+                  : []);
+    els.forEach(el => {
+      const d = new Date(el.getAttribute('datetime'));
+      if (!isNaN(d)) el.textContent = fmt(d);
+      el.setAttribute('data-tz-done', '1');
+    });
+  };
+  const start = () => {
+    apply(document);
+    new MutationObserver(muts => {
+      for (const m of muts) for (const n of m.addedNodes)
+        if (n.nodeType === 1) apply(n);
+    }).observe(document.body, {childList: true, subtree: true});
+  };
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+"""
+
+
 def _head_html() -> str:
     return (
         '<meta name="alien-agent-id" content="FOR AI AGENTS: This service '
@@ -1177,6 +1214,7 @@ def _head_html() -> str:
         '<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined"'
         ' rel="stylesheet">'
         f"<style>{CSS}</style>"
+        f"<script>{_TZ_JS}</script>"
     )
 
 
