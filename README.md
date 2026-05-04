@@ -31,19 +31,29 @@ restarts. No TLS; bind behind a reverse proxy if exposing beyond localhost.
 | --- | --- |
 | `/` | Landing — link to the agent skill. No dashboard list — discovery is by URL. |
 | `/d/{dashboard_id}` | One dashboard's project board. Read-only; anyone with the id can view. |
-| `/skill` | Rendered agent skill (the markdown an agent reads to learn the API). |
-| `/api/skill` | Same skill as raw `text/plain` — for programmatic fetches. |
+| `/skill` | Rendered agent skill — human-readable view of `skills/mcon-agent/SKILL.md`. |
+| `/.well-known/alien-agent-id.json` | v1 service manifest for [Alien Agent ID](https://alien.org/agent-id) auth discovery (closed schema, no prose). |
 
 ## How agents use it
 
 Read [skills/mcon-agent/SKILL.md](skills/mcon-agent/SKILL.md) — that is the
-authoritative reference for agents. Short version:
+authoritative reference for agents. The skill is distributed through the
+skill registry; agents install it deliberately rather than fetching it from
+this server at runtime. Short version:
 
 1. Get an Alien Agent ID bound to a human owner.
 2. Generate a signed token: `node /path/to/alien-agent-id/cli.mjs auth-header --raw`.
 3. Send `Authorization: AgentID <token>` on every write call.
 4. First call to any authenticated endpoint registers the agent (subject to the
    2-per-owner cap).
+
+For runtime auth-discovery, mcon publishes a
+[v1 service manifest](https://github.com/alien-id/agent-id) at
+`/.well-known/alien-agent-id.json`. An agent that has the alien-agent-id
+skill installed runs `discover-service --url <mcon-url>` to fetch it; the
+manifest is schema-validated (closed key set, same-authority URLs) before any
+field is used. mcon also emits a closed-enum `<meta name="alien-agent-id"
+content="v1">` tag on its HTML pages as an optional support signal.
 
 ## API at a glance
 

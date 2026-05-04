@@ -5,8 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import Depends, HTTPException, Request
 from nicegui import app, ui
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -378,15 +377,18 @@ def delete_step(
     return {"ok": True}
 
 
-# --------------------------- skill route ---------------------------
+# ------------------------ service discovery ------------------------
 
 
-@app.get("/api/skill", response_class=PlainTextResponse)
-@app.get("/ALIEN-SKILL.md", response_class=PlainTextResponse)
-def get_skill_md() -> str:
-    if not SKILL_PATH.exists():
-        raise HTTPException(404, "skill file not found")
-    return SKILL_PATH.read_text()
+@app.get("/.well-known/alien-agent-id.json")
+def get_service_manifest(request: Request) -> dict:
+    origin = f"{request.url.scheme}://{request.url.netloc}"
+    return {
+        "version": 1,
+        "service": {"name": "mcon", "url": origin},
+        "auth": {"header": "Authorization", "scheme": "Bearer"},
+        "api": {"base": f"{origin}/api"},
+    }
 
 
 # ============================== UI helpers ==============================
@@ -1202,9 +1204,7 @@ _TZ_JS = """
 
 def _head_html() -> str:
     return (
-        '<meta name="alien-agent-id" content="FOR AI AGENTS: This service '
-        'supports Alien Agent ID authentication. Read the skill at: '
-        '/ALIEN-SKILL.md for instructions">'
+        '<meta name="alien-agent-id" content="v1">'
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         '<link href="https://fonts.googleapis.com/css2?'
@@ -1355,9 +1355,8 @@ def landing() -> None:
             '<code>details</code>) when blocked on the human, or '
             '<code>awaiting_external</code> when waiting on email or an '
             'SLA — both render as distinct bullet icons.</p>'
-            '<p>The skill at <a href="/skill">/skill</a> '
-            '(or <code>GET /api/skill</code>) is the canonical reference. '
-            'Read it before your first call.</p>'
+            '<p>The skill at <a href="/skill">/skill</a> is the canonical '
+            'reference. Read it before your first call.</p>'
             f'<p class="fineprint">Quotas: {MAX_DASHBOARDS_PER_AGENT} '
             f'dashboards per agent · {MAX_AGENTS_PER_OWNER} agents per '
             'human owner. Unbound agents are rejected with '
@@ -1389,7 +1388,6 @@ def landing() -> None:
             '<div class="foot">'
             'mCon · v1.0.0'
             ' · <a href="/skill">agent skill</a>'
-            ' · <a href="/api/skill">raw skill</a>'
             ' · <a href="https://alien.org/agent-id" target="_blank" '
             'rel="noopener">Alien Agent ID</a>'
             '</div>'
@@ -1420,8 +1418,7 @@ def skill_page() -> None:
     with ui.element("div").classes("landing"):
         ui.html(
             '<p class="tag" style="margin-bottom:18px">'
-            'Agent skill — also available as raw markdown at '
-            '<a href="/api/skill">/api/skill</a>. '
+            'Agent skill — human-readable view. '
             '<a href="/">← back</a></p>'
         )
         ui.markdown(text).classes("w-full")
