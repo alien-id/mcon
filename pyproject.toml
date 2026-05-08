@@ -8,5 +8,14 @@ dependencies = [
     "alien-sso-agent-id",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
 [tool.uv.sources]
 alien-sso-agent-id = { path = "../sso-sdk-py/packages/agent-id", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
