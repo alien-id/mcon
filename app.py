@@ -145,7 +145,7 @@ def _map(exc: Exception) -> HTTPException:
 def _ensure_agent(ident: AgentIdentity) -> dict:
     """Register the agent on first sight; enforce per-owner quota."""
     try:
-        return S.upsert_agent(ident.fingerprint, ident.owner, ident.public_key_pem)
+        return S.upsert_agent(ident.jkt, ident.owner)
     except Exception as e:
         raise _map(e) from e
 
@@ -157,10 +157,10 @@ def _ensure_agent(ident: AgentIdentity) -> dict:
 def me(ident: AgentIdentity = Depends(require_owned_agent)):
     agent = _ensure_agent(ident)
     return {
-        "fingerprint": agent["fingerprint"],
+        "jkt": agent["jkt"],
         "owner": agent["owner"],
         "created_at": agent["created_at"],
-        "dashboards": S.list_dashboards(ident.fingerprint),
+        "dashboards": S.list_dashboards(ident.jkt),
         "limits": {
             "dashboards_per_agent": MAX_DASHBOARDS_PER_AGENT,
             "agents_per_owner": MAX_AGENTS_PER_OWNER,
@@ -171,7 +171,7 @@ def me(ident: AgentIdentity = Depends(require_owned_agent)):
 @app.delete("/api/me")
 def delete_me(ident: AgentIdentity = Depends(require_owned_agent)):
     try:
-        S.delete_agent(ident.fingerprint)
+        S.delete_agent(ident.jkt)
     except Exception as e:
         raise _map(e) from e
     return {"ok": True}
@@ -196,7 +196,7 @@ def create_dashboard(
     _ensure_agent(ident)
     try:
         return S.create_dashboard(
-            ident.fingerprint,
+            ident.jkt,
             title=payload.title,
             description=payload.description,
         )
@@ -213,7 +213,7 @@ def patch_dashboard(
     _ensure_agent(ident)
     try:
         return S.patch_dashboard(
-            did, ident.fingerprint, payload.model_dump(exclude_unset=True)
+            did, ident.jkt, payload.model_dump(exclude_unset=True)
         )
     except Exception as e:
         raise _map(e) from e
@@ -226,7 +226,7 @@ def delete_dashboard(
 ):
     _ensure_agent(ident)
     try:
-        S.delete_dashboard(did, ident.fingerprint)
+        S.delete_dashboard(did, ident.jkt)
     except Exception as e:
         raise _map(e) from e
     return {"ok": True}
@@ -262,7 +262,7 @@ def create_project(
     try:
         return S.create_project(
             did,
-            ident.fingerprint,
+            ident.jkt,
             pid=payload.id,
             title=payload.title,
             description=payload.description,
@@ -286,7 +286,7 @@ def upsert_project(
     try:
         return S.upsert_project(
             did,
-            ident.fingerprint,
+            ident.jkt,
             pid,
             title=payload.title,
             description=payload.description,
@@ -308,7 +308,7 @@ def patch_project(
     _ensure_agent(ident)
     try:
         return S.patch_project(
-            did, ident.fingerprint, pid, payload.model_dump(exclude_unset=True)
+            did, ident.jkt, pid, payload.model_dump(exclude_unset=True)
         )
     except Exception as e:
         raise _map(e) from e
@@ -322,7 +322,7 @@ def delete_project(
 ):
     _ensure_agent(ident)
     try:
-        S.delete_project(did, ident.fingerprint, pid)
+        S.delete_project(did, ident.jkt, pid)
     except Exception as e:
         raise _map(e) from e
     return {"ok": True}
@@ -340,7 +340,7 @@ def add_step(
 ):
     _ensure_agent(ident)
     try:
-        return S.add_step(did, ident.fingerprint, pid, payload.model_dump())
+        return S.add_step(did, ident.jkt, pid, payload.model_dump())
     except Exception as e:
         raise _map(e) from e
 
@@ -356,7 +356,7 @@ def update_step(
     _ensure_agent(ident)
     try:
         return S.patch_step(
-            did, ident.fingerprint, pid, sid, payload.model_dump(exclude_unset=True)
+            did, ident.jkt, pid, sid, payload.model_dump(exclude_unset=True)
         )
     except Exception as e:
         raise _map(e) from e
@@ -371,7 +371,7 @@ def delete_step(
 ):
     _ensure_agent(ident)
     try:
-        S.delete_step(did, ident.fingerprint, pid, sid)
+        S.delete_step(did, ident.jkt, pid, sid)
     except Exception as e:
         raise _map(e) from e
     return {"ok": True}
@@ -386,7 +386,7 @@ def get_service_manifest(request: Request) -> dict:
     return {
         "version": 1,
         "service": {"name": "mcon", "url": origin},
-        "auth": {"header": "Authorization", "scheme": "AgentID"},
+        "auth": {"header": "Authorization", "scheme": "DPoP"},
         "api": {"base": f"{origin}/api"},
     }
 

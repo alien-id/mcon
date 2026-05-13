@@ -1,7 +1,7 @@
 """SQLite storage for mCon — multi-tenant data layer.
 
 Schema:
-- agents:     one per Alien Agent ID (fingerprint PK, owner, pubkey)
+- agents:     one per Alien Agent ID (jkt PK, owner)
 - dashboards: belong to an agent (id PK, owner via agent)
 - projects:   belong to a dashboard
 - steps:      belong to a project
@@ -9,6 +9,11 @@ Schema:
 Quotas (enforced here):
 - 2 agents per human owner (`MAX_AGENTS_PER_OWNER`)
 - 5 dashboards per agent   (`MAX_DASHBOARDS_PER_AGENT`)
+
+`jkt` is the RFC 7638 thumbprint of the agent's DPoP keypair (an opaque
+URL-safe-base64 string). It is the agent's stable identifier; the actual
+public key is never persisted — only the SDK ever needs it, and it ships
+with each request's DPoP proof header.
 """
 
 from __future__ import annotations
@@ -76,22 +81,21 @@ def _norm_text(d: Optional[str]) -> Optional[str]:
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents (
-    fingerprint     TEXT PRIMARY KEY,
-    owner           TEXT NOT NULL,
-    public_key_pem  TEXT NOT NULL,
-    created_at      TEXT NOT NULL
+    jkt         TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner);
 
 CREATE TABLE IF NOT EXISTS dashboards (
-    id                TEXT PRIMARY KEY,
-    agent_fingerprint TEXT NOT NULL REFERENCES agents(fingerprint) ON DELETE CASCADE,
-    title             TEXT NOT NULL,
-    description       TEXT NOT NULL DEFAULT '',
-    created_at        TEXT NOT NULL,
-    last_updated      TEXT
+    id            TEXT PRIMARY KEY,
+    agent_jkt     TEXT NOT NULL REFERENCES agents(jkt) ON DELETE CASCADE,
+    title         TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    last_updated  TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_dashboards_agent ON dashboards(agent_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_dashboards_agent ON dashboards(agent_jkt);
 
 CREATE TABLE IF NOT EXISTS projects (
     dashboard_id  TEXT NOT NULL REFERENCES dashboards(id) ON DELETE CASCADE,
@@ -141,21 +145,16 @@ class Store:
 
     # --------------------------- agents ---------------------------
 
-    def upsert_agent(
-        self,
-        fingerprint: str,
-        owner: str,
-        public_key_pem: str,
-    ) -> dict:
+    def upsert_agent(self, jkt: str, owner: str) -> dict:
         """Register the agent on first sight; enforce per-owner agent quota."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM agents WHERE fingerprint = ?", (fingerprint,)
+                "SELECT * FROM agents WHERE jkt = ?", (jkt,)
             ).fetchone()
             if row:
                 if row["owner"] != owner:
                     raise Forbidden(
-                        "agent fingerprint is bound to a different owner; "
+                        "agent jkt is bound to a different owner; "
                         "the binding is immutable"
                     )
                 return _agent_row_to_dict(row)
@@ -168,26 +167,25 @@ class Store:
                     f"(max {MAX_AGENTS_PER_OWNER})"
                 )
             self._conn.execute(
-                "INSERT INTO agents(fingerprint, owner, public_key_pem, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (fingerprint, owner, public_key_pem, _now_iso()),
+                "INSERT INTO agents(jkt, owner, created_at) VALUES (?, ?, ?)",
+                (jkt, owner, _now_iso()),
             )
             self.version += 1
-            return self.get_agent(fingerprint)
+            return self.get_agent(jkt)
 
-    def get_agent(self, fingerprint: str) -> dict:
+    def get_agent(self, jkt: str) -> dict:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM agents WHERE fingerprint = ?", (fingerprint,)
+                "SELECT * FROM agents WHERE jkt = ?", (jkt,)
             ).fetchone()
         if not row:
             raise NotFound("agent not registered")
         return _agent_row_to_dict(row)
 
-    def delete_agent(self, fingerprint: str) -> None:
+    def delete_agent(self, jkt: str) -> None:
         with self._lock:
             cur = self._conn.execute(
-                "DELETE FROM agents WHERE fingerprint = ?", (fingerprint,)
+                "DELETE FROM agents WHERE jkt = ?", (jkt,)
             )
             if cur.rowcount == 0:
                 raise NotFound("agent not registered")
@@ -203,28 +201,28 @@ class Store:
 
     # --------------------------- dashboards ---------------------------
 
-    def list_dashboards(self, fingerprint: Optional[str] = None) -> list[dict]:
+    def list_dashboards(self, jkt: Optional[str] = None) -> list[dict]:
         with self._lock:
-            if fingerprint is None:
+            if jkt is None:
                 rows = self._conn.execute(
                     "SELECT d.*, a.owner AS owner "
                     "FROM dashboards d JOIN agents a "
-                    "ON a.fingerprint = d.agent_fingerprint "
+                    "ON a.jkt = d.agent_jkt "
                     "ORDER BY d.created_at"
                 ).fetchall()
             else:
                 rows = self._conn.execute(
                     "SELECT d.*, a.owner AS owner "
                     "FROM dashboards d JOIN agents a "
-                    "ON a.fingerprint = d.agent_fingerprint "
-                    "WHERE d.agent_fingerprint = ? ORDER BY d.created_at",
-                    (fingerprint,),
+                    "ON a.jkt = d.agent_jkt "
+                    "WHERE d.agent_jkt = ? ORDER BY d.created_at",
+                    (jkt,),
                 ).fetchall()
         return [_dashboard_row_to_dict(r) for r in rows]
 
     def create_dashboard(
         self,
-        agent_fingerprint: str,
+        agent_jkt: str,
         *,
         title: str,
         description: Optional[str],
@@ -233,8 +231,8 @@ class Store:
             raise ValueError("title is required")
         with self._lock:
             n = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM dashboards WHERE agent_fingerprint = ?",
-                (agent_fingerprint,),
+                "SELECT COUNT(*) AS n FROM dashboards WHERE agent_jkt = ?",
+                (agent_jkt,),
             ).fetchone()["n"]
             if n >= MAX_DASHBOARDS_PER_AGENT:
                 raise QuotaExceeded(
@@ -245,9 +243,9 @@ class Store:
             now = _now_iso()
             self._conn.execute(
                 "INSERT INTO dashboards"
-                "(id, agent_fingerprint, title, description, created_at, last_updated) "
+                "(id, agent_jkt, title, description, created_at, last_updated) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (did, agent_fingerprint, title, description or "", now, now),
+                (did, agent_jkt, title, description or "", now, now),
             )
             self.version += 1
             return self.get_dashboard(did)
@@ -257,7 +255,7 @@ class Store:
             row = self._conn.execute(
                 "SELECT d.*, a.owner AS owner "
                 "FROM dashboards d JOIN agents a "
-                "ON a.fingerprint = d.agent_fingerprint "
+                "ON a.jkt = d.agent_jkt "
                 "WHERE d.id = ?",
                 (did,),
             ).fetchone()
@@ -268,11 +266,11 @@ class Store:
     def patch_dashboard(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         fields: dict,
     ) -> dict:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             sets, vals = [], []
             if "title" in fields:
                 if not (fields["title"] or "").strip():
@@ -290,19 +288,19 @@ class Store:
             self._touch_dashboard(did)
             return self.get_dashboard(did)
 
-    def delete_dashboard(self, did: str, agent_fingerprint: str) -> None:
+    def delete_dashboard(self, did: str, agent_jkt: str) -> None:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             self._conn.execute("DELETE FROM dashboards WHERE id = ?", (did,))
             self.version += 1
 
-    def _assert_dashboard_owner(self, did: str, agent_fingerprint: str) -> None:
+    def _assert_dashboard_owner(self, did: str, agent_jkt: str) -> None:
         row = self._conn.execute(
-            "SELECT agent_fingerprint FROM dashboards WHERE id = ?", (did,)
+            "SELECT agent_jkt FROM dashboards WHERE id = ?", (did,)
         ).fetchone()
         if not row:
             raise NotFound(f"dashboard {did!r} not found")
-        if row["agent_fingerprint"] != agent_fingerprint:
+        if row["agent_jkt"] != agent_jkt:
             raise Forbidden("dashboard belongs to another agent")
 
     def _touch_dashboard(self, did: str) -> None:
@@ -356,7 +354,7 @@ class Store:
     def create_project(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         *,
         pid: Optional[str],
         title: str,
@@ -369,7 +367,7 @@ class Store:
             raise ValueError("title is required")
         created_at = _validate_iso(created_at, "created_at")
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             pid = pid or _new_id()
             existing = self._conn.execute(
                 "SELECT 1 FROM projects WHERE dashboard_id = ? AND id = ?",
@@ -404,7 +402,7 @@ class Store:
     def upsert_project(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         pid: str,
         *,
         title: str,
@@ -417,7 +415,7 @@ class Store:
             raise ValueError("title is required")
         created_at = _validate_iso(created_at, "created_at")
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             existing = self._conn.execute(
                 "SELECT created_at, position FROM projects "
                 "WHERE dashboard_id = ? AND id = ?",
@@ -468,12 +466,12 @@ class Store:
     def patch_project(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         pid: str,
         fields: dict,
     ) -> dict:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             existing = self._conn.execute(
                 "SELECT 1 FROM projects WHERE dashboard_id = ? AND id = ?",
                 (did, pid),
@@ -505,9 +503,9 @@ class Store:
             self._touch_dashboard(did)
             return self.get_project(did, pid)
 
-    def delete_project(self, did: str, agent_fingerprint: str, pid: str) -> None:
+    def delete_project(self, did: str, agent_jkt: str, pid: str) -> None:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             cur = self._conn.execute(
                 "DELETE FROM projects WHERE dashboard_id = ? AND id = ?",
                 (did, pid),
@@ -521,12 +519,12 @@ class Store:
     def add_step(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         pid: str,
         s: dict,
     ) -> dict:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             existing = self._conn.execute(
                 "SELECT 1 FROM projects WHERE dashboard_id = ? AND id = ?",
                 (did, pid),
@@ -550,13 +548,13 @@ class Store:
     def patch_step(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         pid: str,
         sid: str,
         fields: dict,
     ) -> dict:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             row = self._conn.execute(
                 "SELECT * FROM steps WHERE dashboard_id = ? AND project_id = ? "
                 "AND id = ?",
@@ -618,12 +616,12 @@ class Store:
     def delete_step(
         self,
         did: str,
-        agent_fingerprint: str,
+        agent_jkt: str,
         pid: str,
         sid: str,
     ) -> None:
         with self._lock:
-            self._assert_dashboard_owner(did, agent_fingerprint)
+            self._assert_dashboard_owner(did, agent_jkt)
             cur = self._conn.execute(
                 "DELETE FROM steps WHERE dashboard_id = ? AND project_id = ? "
                 "AND id = ?",
@@ -736,9 +734,8 @@ class Store:
 
 def _agent_row_to_dict(r: sqlite3.Row) -> dict:
     return {
-        "fingerprint": r["fingerprint"],
+        "jkt": r["jkt"],
         "owner": r["owner"],
-        "public_key_pem": r["public_key_pem"],
         "created_at": r["created_at"],
     }
 
@@ -747,7 +744,7 @@ def _dashboard_row_to_dict(r: sqlite3.Row) -> dict:
     keys = r.keys()
     return {
         "id": r["id"],
-        "agent_fingerprint": r["agent_fingerprint"],
+        "agent_jkt": r["agent_jkt"],
         "owner": r["owner"] if "owner" in keys else None,
         "title": r["title"],
         "description": r["description"] or "",

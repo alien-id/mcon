@@ -41,9 +41,10 @@ def test_manifest_v1_required_fields(client: TestClient) -> None:
     body = client.get("/.well-known/alien-agent-id.json").json()
     assert body["version"] == 1
     assert body["auth"]["header"] == "Authorization"
-    assert body["auth"]["scheme"] == "AgentID", (
-        "scheme must be AgentID — agent-id CLI emits 'Authorization: AgentID <token>'; "
-        "Bearer would produce a header the verifier rejects"
+    assert body["auth"]["scheme"] == "DPoP", (
+        "scheme must be DPoP — agents present 'Authorization: DPoP <access_token>' "
+        "(RFC 9449 §7.1) paired with a DPoP proof header; Bearer or the legacy "
+        "AgentID envelope would produce headers the verifier rejects"
     )
     assert isinstance(body["api"]["base"], str) and body["api"]["base"]
     assert body["service"]["name"] == "mcon"

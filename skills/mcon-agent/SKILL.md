@@ -91,7 +91,7 @@ one of the older agents via that agent's `DELETE /api/me` call.
 # Inspect yourself — registers you on the first call
 curl -H "$(auth)" "$MCON/api/me" | jq
 # → {
-#     "fingerprint": "f5d9fac4...",
+#     "jkt": "f5d9fac4...",            // RFC 7638 thumbprint of your DPoP key
 #     "owner": "00000003...",
 #     "created_at": "...",
 #     "dashboards": [ ... ],
