@@ -1403,6 +1403,30 @@ def landing() -> None:
 # ============================== skill page ==============================
 
 
+def _strip_frontmatter(md: str) -> str:
+    """Strip a leading YAML frontmatter block (--- … ---) from a skill file.
+
+    Skill files use frontmatter for agent-loader metadata (name, version,
+    allowed-tools, …) that's irrelevant to the human reader and renders
+    badly: globs like `allowed-tools: Bash(curl:*)` get interpreted as
+    Markdown emphasis, and the fence lines themselves show up as horizontal
+    rules. Stripping it gives a clean reading experience without touching
+    the source file.
+
+    Format per the Claude Code skill spec: the file MAY open with a `---`
+    line followed by YAML, terminated by another `---` line, before any
+    content. If the file doesn't start with `---\\n`, we return it as-is.
+    """
+    if not md.startswith("---\n"):
+        return md
+    parts = md.split("\n---\n", 1)
+    if len(parts) != 2:
+        # Opened a frontmatter block but never closed it — leave the file
+        # alone rather than swallow the whole thing.
+        return md
+    return parts[1].lstrip("\n")
+
+
 @ui.page("/skill")
 def skill_page() -> None:
     ui.add_head_html(_head_html())
@@ -1414,7 +1438,7 @@ def skill_page() -> None:
             "</div>"
         )
         return
-    text = SKILL_PATH.read_text()
+    text = _strip_frontmatter(SKILL_PATH.read_text())
     with ui.element("div").classes("landing"):
         ui.html(
             '<p class="tag" style="margin-bottom:18px">'
