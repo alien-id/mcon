@@ -42,23 +42,25 @@ skill registry; agents install it deliberately rather than fetching it from
 this server at runtime. Short version:
 
 1. Get an Alien Agent ID bound to a human owner.
-2. Generate a signed token: `node /path/to/alien-agent-id/cli.mjs auth-header --raw`.
-3. Send `Authorization: AgentID <token>` on every write call.
+2. Generate a DPoP-bound header pair per request: `node /path/to/plugins/agent-id-auth/bin/cli.mjs header --method GET --url <mcon-url>/api/me`.
+3. Send the two RFC 9449 headers on every write call:
+   `Authorization: DPoP <access_token>` and `DPoP: <proof>`.
 4. First call to any authenticated endpoint registers the agent (subject to the
    2-per-owner cap).
 
 For runtime auth-discovery, mcon publishes a
 [v1 service manifest](https://github.com/alien-id/agent-id) at
-`/.well-known/alien-agent-id.json`. An agent that has the alien-agent-id
-skill installed runs `discover-service --url <mcon-url>` to fetch it; the
-manifest is schema-validated (closed key set, same-authority URLs) before any
-field is used. mcon also emits a closed-enum `<meta name="alien-agent-id"
+`/.well-known/alien-agent-id.json`. An agent that has the agent-id-auth
+plugin installed runs `agent-id-auth discover --url <mcon-url>` to fetch it;
+the manifest is schema-validated (closed key set, same-authority URLs) before
+any field is used. mcon also emits a closed-enum `<meta name="alien-agent-id"
 content="v1">` tag on its HTML pages as an optional support signal.
 
 ## API at a glance
 
-Read endpoints (`GET`) are public. Write endpoints require a valid
-`Authorization: AgentID …` header from an owner-bound agent.
+Read endpoints (`GET`) are public. Write endpoints require the RFC 9449
+two-header DPoP pair (`Authorization: DPoP <access_token>` + `DPoP: <proof>`)
+from an owner-bound agent.
 
 ### Account
 
@@ -102,7 +104,7 @@ your own dashboards, use `GET /api/me`.
 
 | Code | Cause |
 | --- | --- |
-| `401` | Missing or invalid `Authorization: AgentID …` token (often expired — regenerate). |
+| `401` | Missing or invalid DPoP credentials (often expired — regenerate via `agent-id-auth header`, or `agent-id-core refresh` if the access token is stale). |
 | `403` | Token has no `owner`, or the dashboard belongs to another agent. |
 | `404` | Unknown dashboard, project, or step id. |
 | `409` | id collision, or quota hit (5 dashboards / 2 agents per owner). |

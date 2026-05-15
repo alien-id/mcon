@@ -5,8 +5,8 @@ license: MIT
 compatibility: Any AI agent with shell access, Node.js 18+, and an Alien Agent ID v3+ (DPoP)
 metadata:
   author: mCon
-  version: "2.0.0"
-allowed-tools: Bash(alien-agent-id:*) Bash(node:*) Bash(curl:*) Bash(jq:*)
+  version: "2.1.0"
+allowed-tools: Bash(node *agent-id-core/bin/cli.mjs:*) Bash(node *agent-id-auth/bin/cli.mjs:*) Bash(curl:*) Bash(jq:*)
 ---
 
 # mCon — Agent-Managed Dashboards for Your Human Owner
@@ -25,39 +25,44 @@ This skill teaches you how to:
 ## 1) Prerequisites
 
 You must have an **Alien Agent ID** (v3 or later — DPoP-enabled) already
-bound to a human owner. If you don't, run the [`alien-agent-id`](https://alien.org/agent-id)
+bound to a human owner. If you don't, run the [`/agent-id-core`](https://alien.org/agent-id)
 skill first. The minimum requirement is:
 
 ```bash
-alien-agent-id status
-# → "bound": true, "owner": "0000000301..."
+node /absolute/path/to/plugins/agent-id-core/bin/cli.mjs status
+# → "bound": true, "ownerSub": "0000000301..."
 ```
 
-If `bound` is `false`, stop here and complete the Alien Agent ID setup.
-mCon rejects requests without a valid DPoP-bound access token with `401`.
+If `bound` is `false`, stop here and complete the Alien Agent ID setup
+(`/agent-id-core bootstrap`). mCon rejects requests without a valid
+DPoP-bound access token with `401`.
 
 You also need:
 
-- **Node.js 18+** (for the `alien-agent-id` CLI)
+- **Node.js 18+** (for the Alien Agent ID plugin CLIs)
 - **`curl` and `jq`** (or any HTTP client of your choice)
 - The mCon **base URL** — the same origin you fetched this skill from.
   All API paths below are relative to it. (For a local dev install with
   no public origin, default to `http://localhost:8765`.)
 
-### Resolve the CLI path
+### Resolve the CLI paths
 
-If `alien-agent-id` is installed globally (`npm install -g alien-agent-id`)
-the bare command works. Otherwise resolve the absolute path to `cli.mjs`
-shipped with the skill:
+Alien Agent ID ships as a marketplace of focused plugins. This skill uses
+two of them:
+
+- **`agent-id-core`** for `status` and `refresh` (session lifecycle).
+- **`agent-id-auth`** for `header` (per-request DPoP headers).
 
 ```bash
-# Either:
-ALIEN_CLI="alien-agent-id"                                # globally installed
-# OR:
-ALIEN_CLI="node /absolute/path/to/alien-agent-id/cli.mjs" # local checkout
+# Resolve once at the top of your session:
+AGENT_ID_CLI="node /absolute/path/to/plugins/agent-id-core/bin/cli.mjs"
+AGENT_ID_AUTH_CLI="node /absolute/path/to/plugins/agent-id-auth/bin/cli.mjs"
 ```
 
-All examples below assume `$ALIEN_CLI` is set.
+If you installed via the Claude Code plugin marketplace, both binaries
+live under `~/.claude/plugins/<source>/agent-id-<name>/bin/cli.mjs` —
+substitute the absolute path your installation chose. All examples
+below assume both variables are set.
 
 ## 2) The auth headers (RFC 9449 DPoP)
 
@@ -80,7 +85,8 @@ Because the proof is bound to the target URL, you must regenerate it for
 every API call. The CLI does both halves in one shot:
 
 ```bash
-ALIEN_CLI="<see above>"
+AGENT_ID_CLI="<see above>"        # agent-id-core/bin/cli.mjs
+AGENT_ID_AUTH_CLI="<see above>"   # agent-id-auth/bin/cli.mjs
 MCON="<the origin you fetched this skill from>"     # e.g. https://mcon.alien.org
 
 # Mint a DPoP-bound header pair for a specific request. Captures method + URL
@@ -88,7 +94,7 @@ MCON="<the origin you fetched this skill from>"     # e.g. https://mcon.alien.or
 auth() {
   local method="$1" url="$2"
   local pair
-  pair=$($ALIEN_CLI auth-header --method "$method" --url "$url") || return 1
+  pair=$($AGENT_ID_AUTH_CLI header --method "$method" --url "$url") || return 1
   AUTH_HEADER=$(printf '%s' "$pair" | jq -r .authorization)
   DPOP_HEADER=$(printf '%s' "$pair" | jq -r .dpop)
 }
@@ -101,6 +107,14 @@ curl -s -H "Authorization: $AUTH_HEADER" -H "DPoP: $DPOP_HEADER" "$MCON/api/me"
 > The CLI also accepts `--raw` to print two `Header: value` lines instead
 > of JSON. Prefer the JSON form above — it's robust to whitespace, doesn't
 > need `eval`, and gives you the two header values as separate variables.
+
+> **Shortcut for one-shot calls.** `agent-id-auth` also has a `call`
+> subcommand that signs and sends in one step, parses the response, and
+> returns `{ ok, status, body, ... }` as JSON. The `auth + curl` pattern
+> above is what you want when you need to drive curl (or another HTTP
+> client) yourself — e.g. when you want to inspect non-2xx responses or
+> set additional headers. For the simple read path, `$AGENT_ID_AUTH_CLI
+> call --url "$MCON/api/me" --method GET` is equivalent.
 
 **Read endpoints (`GET`) are public — no auth required.**
 **Write endpoints (`POST`, `PATCH`, `PUT`, `DELETE`) require both headers.**
@@ -328,10 +342,10 @@ self-diagnose:
 | --- | --- | --- |
 | `401` | `missing_authorization`, `invalid_scheme` | No `Authorization` header, or it didn't start with `DPoP `. |
 | `401` | `missing_dpop_header` | `Authorization` present, `DPoP` header missing. Re-run `auth`. |
-| `401` | `bad_proof_signature`, `bad_proof_typ`, `htm_mismatch`, `htu_mismatch` | Proof is malformed or doesn't bind to the request you actually sent. Common cause: `--method` or `--url` passed to `auth-header` didn't match the curl call. |
+| `401` | `bad_proof_signature`, `bad_proof_typ`, `htm_mismatch`, `htu_mismatch` | Proof is malformed or doesn't bind to the request you actually sent. Common cause: `--method` or `--url` passed to `agent-id-auth header` didn't match the curl call. |
 | `401` | `proof_stale`, `jti_replay` | Proof older than 30 s, or `jti` already seen. Re-run `auth` and try once more. |
-| `401` | `jkt_mismatch`, `ath_mismatch`, `missing_cnf_jkt` | Access token and proof key don't agree. Your SSO session may be stale — run `$ALIEN_CLI refresh` then re-auth. |
-| `401` | `bad_at_signature`, `iss_mismatch`, `aud_mismatch`, `at_expired` | Access token is invalid or expired for this service. Run `$ALIEN_CLI refresh`. |
+| `401` | `jkt_mismatch`, `ath_mismatch`, `missing_cnf_jkt` | Access token and proof key don't agree. Your SSO session may be stale — run `$AGENT_ID_CLI refresh` then re-auth. |
+| `401` | `bad_at_signature`, `iss_mismatch`, `aud_mismatch`, `at_expired` | Access token is invalid or expired for this service. Run `$AGENT_ID_CLI refresh`. |
 | `403` | `dashboard belongs to another agent` | The path's dashboard isn't owned by your agent key. |
 | `404` | — | Unknown dashboard, project, or step id. |
 | `409` | — | Project id collision on create, or you hit a quota (5 dashboards / 2 agents per owner). |
@@ -372,7 +386,7 @@ active project shares it.
 `bad_at_signature`, run:
 
 ```bash
-$ALIEN_CLI refresh
+$AGENT_ID_CLI refresh
 ```
 
 This rotates the cached access token without re-prompting the human. The
